@@ -1,4 +1,4 @@
-"""TOV4R MUSIC V6 — multi-source bot with verified FFmpeg audio diagnosis."""
+"""TOV4R MUSIC V7 — URL support and preflight playback checking."""
 import asyncio
 import math
 import ipaddress
@@ -128,6 +128,18 @@ def safe_url(url: str) -> bool:
         return False
 
 
+
+DIRECT_AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac', '.webm', '.m3u8'}
+
+
+def direct_audio_url(url: str) -> bool:
+    """Explicit public HTTPS media file/stream URLs; no scraping required."""
+    if not safe_url(url):
+        return False
+    path = urlparse(url).path.lower()
+    return any(path.endswith(ext) for ext in DIRECT_AUDIO_EXTENSIONS)
+
+
 def spotify_type(url: str) -> tuple[str, str] | None:
     try:
         parsed = urlparse(url)
@@ -208,12 +220,16 @@ def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]
             raise ValueError('Lien HTTPS public w s7i7, bla adresse locale.')
         if spotify_type(text) or urlparse(text).hostname == 'spotify.link':
             raise ValueError('Spotify ma kay3tich son direct l Discord. Jarrab /spotifyinfo pour les infos, ou source audio autorisee.')
-        is_list = playlist_url(text)
-        info = extract_sync(text, playlist=is_list, limit=min(max_items, MAX_PLAYLIST_IMPORT))
-        if is_list and 'entries' in info:
-            result = [info_to_track(entry, requester) for entry in list(info['entries'])[:max_items] if entry]
+        if direct_audio_url(text):
+            filename = urlparse(text).path.rsplit('/', 1)[-1] or 'Audio stream'
+            result = [Track(title=filename[:180], page_url=text, requester=requester)]
         else:
-            result = [info_to_track(info, requester)]
+            is_list = playlist_url(text)
+            info = extract_sync(text, playlist=is_list, limit=min(max_items, MAX_PLAYLIST_IMPORT))
+            if is_list and 'entries' in info:
+                result = [info_to_track(entry, requester) for entry in list(info['entries'])[:max_items] if entry]
+            else:
+                result = [info_to_track(info, requester)]
     else:
         # Search several candidates, not only one, then retry at playback if needed.
         info = extract_sync('ytsearch5:' + text, playlist=True, limit=5)
@@ -239,7 +255,9 @@ async def find_track(text: str, requester: str) -> Track:
 
 
 def resolve_audio_sync(track: Track) -> dict:
-    """Resolve streaming media freshly. Search may try alternative public results."""
+    """Resolve audio freshly, or accept a direct public HTTPS audio/stream URL."""
+    if direct_audio_url(track.page_url):
+        return {'url': track.page_url, 'title': track.title, 'http_headers': {}}
     try:
         info = extract_sync(track.page_url, playlist=False)
         if info.get('url') and isinstance(info['url'], str):
@@ -406,6 +424,49 @@ def probe_stream_sync(info: dict) -> tuple[bool, str]:
     return False, f'FFmpeg produced {decoded} bytes PCM. {ffmpeg_problem(error_text, proc.returncode)}'
 
 
+def playable_audio_sync(track: Track) -> tuple[dict, str]:
+    """Preflight audio on the hosting machine before telling Discord 'now playing'.
+
+    When a selected media format fails, try up to two alternate public audio
+    formats from the same extraction result. Does not defeat access restrictions.
+    """
+    info = resolve_audio_sync(track)
+    ok, message = probe_stream_sync(info)
+    if ok:
+        return info, message
+
+    # FFmpeg can be denied a specific format even when another legitimate
+    # format of the same publicly accessible item is available.
+    formats = info.get('formats') or []
+    if not isinstance(formats, list):
+        formats = []
+    seen = {str(info.get('url') or '')}
+    options = []
+    for fmt in formats:
+        if not isinstance(fmt, dict):
+            continue
+        url = fmt.get('url')
+        if not isinstance(url, str) or not url.startswith('https://') or url in seen:
+            continue
+        if fmt.get('acodec') in (None, 'none'):
+            continue
+        seen.add(url)
+        # Prefer audio-only variants when possible, without requiring a single codec.
+        score = (fmt.get('vcodec') not in (None, 'none'), fmt.get('ext') not in ('m4a', 'mp3', 'webm'))
+        options.append((score, fmt))
+    options.sort(key=lambda item: item[0])
+    for _, fmt in options[:2]:
+        alt = dict(info)
+        alt.update(fmt)
+        alt['http_headers'] = fmt.get('http_headers') or info.get('http_headers') or {}
+        alt_ok, alt_message = probe_stream_sync(alt)
+        if alt_ok:
+            log.info('An alternate media format is playable for guild music source.')
+            return alt, alt_message
+        message = alt_message
+    return {}, message
+
+
 class MonitoredFFmpegAudio(discord.FFmpegPCMAudio):
     """Track decoded PCM bytes, so Now Playing cannot mask FFmpeg failures."""
     def __init__(self, *args, **kwargs):
@@ -488,7 +549,10 @@ async def advance(guild_id: int):
             return
         try:
             # Refresh stream URLs at actual playback time to avoid expired URLs.
-            info = await asyncio.to_thread(resolve_audio_sync, next_track)
+            info, diagnostic = await asyncio.to_thread(playable_audio_sync, next_track)
+            if not info:
+                # A playback error is not the same thing as a song not existing.
+                raise ValueError(diagnostic)
             stream_url = info.get('url')
             if not stream_url:
                 raise ValueError('Source audio indisponible')
@@ -546,7 +610,15 @@ async def advance(guild_id: int):
             st.current = None
             if st.channel:
                 try:
-                    await st.channel.send(embed=embed('SOURCE MA KHEDMATCH', 'Had lghnya ma khdematch daba. Ghadi njarrbo li mn b3dha.'))
+                    # A short, sanitized diagnosis is much more useful than 'not found'.
+                    reason = str(exc)
+                    if 'http' in reason.lower() and '://' in reason:
+                        reason = 'Lien non disponible pour le serveur.'
+                    await st.channel.send(embed=embed('SOURCE MA KHEDMATCH',
+                        '❌ Had source ma qdrach yqraha serveur.\n'
+                        f'**Cause:** {reason[:160]}\n'
+                        '⚠️ HTTP 403 kay3ni source rafdat l acces; ma kaynch fix garanti.\n'
+                        'Ghadi njarrbo li mn b3dha.'))
                 except discord.HTTPException:
                     pass
             asyncio.get_running_loop().call_soon(lambda: asyncio.create_task(advance(guild_id)))
@@ -651,7 +723,7 @@ async def ping(interaction: discord.Interaction):
         f'📡 Ping: {round(bot.latency * 1000)} ms', ephemeral=True)
 
 @bot.tree.command(name='sma3', description='🎵 Sma3 chi music: kteb smiya wla lien HTTPS')
-@app_commands.describe(ghnya='Smiya, lien YouTube/SoundCloud ou playlist publique')
+@app_commands.describe(ghnya='Smiya, lien public ou fichier audio direct HTTPS')
 async def sma3(interaction: discord.Interaction, ghnya: str):
     st = await ensure_voice(interaction)
     if not st: return
@@ -1017,7 +1089,7 @@ async def testffmpeg(interaction: discord.Interaction):
 
 
 @bot.tree.command(name='testlink', description='🔎 Chof wach lien/music t9dr tt7el b yt-dlp')
-@app_commands.describe(lien='Lien HTTPS dyal chi song (YouTube/SoundCloud etc.)')
+@app_commands.describe(lien='Lien HTTPS public: song, stream mp3 ou m3u8')
 async def testlink(interaction: discord.Interaction, lien: str):
     if not interaction.guild:
         await interaction.response.send_message('⛔ Server only.', ephemeral=True)
@@ -1028,14 +1100,11 @@ async def testlink(interaction: discord.Interaction, lien: str):
         return
     try:
         track = await find_track(lien, interaction.user.display_name)
-        info = await asyncio.wait_for(asyncio.to_thread(extract_sync, track.page_url, False), timeout=40)
-        stream_url = info.get('url')
-        if not stream_url or not isinstance(stream_url, str):
-            raise ValueError('Aucune URL audio directe')
-        works, diagnostic = await asyncio.wait_for(
-            asyncio.to_thread(probe_stream_sync, info), timeout=42)
+        info, diagnostic = await asyncio.wait_for(
+            asyncio.to_thread(playable_audio_sync, track), timeout=130)
+        works = bool(info and info.get('url'))
         await interaction.followup.send(embed=embed('TEST LINK • SOURCE AUDIO',
-            f'✅ yt-dlp 9ra lien: **{track.title}**\n'
+            f'✅ Lien t9ra: **{track.title}**\n'
             + ('✅ **FFmpeg qra son:** ' if works else '❌ **FFmpeg ma 9rach son:** ')
             + diagnostic + '\n\n'
             + ('Jarrab `/sma3` daba.' if works else
