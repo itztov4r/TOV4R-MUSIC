@@ -1,4 +1,4 @@
-"""TOV4R MUSIC — free self-hosted Darija Discord music bot."""
+"""TOV4R MUSIC V6 — multi-source bot with verified FFmpeg audio diagnosis."""
 import asyncio
 import math
 import ipaddress
@@ -7,6 +7,9 @@ import struct
 import logging
 import os
 import random
+import shlex
+import subprocess
+import tempfile
 import sqlite3
 import time
 import shutil
@@ -323,6 +326,98 @@ def spotify_metadata_sync(link: str) -> tuple[str, list[str]]:
     return str(playlist.get('name') or 'Spotify playlist'), result
 
 
+# ----- V6: Pass site-provided stream headers to FFmpeg, and diagnose silent sources. -----
+def ffmpeg_input_args(info: dict) -> list[str]:
+    """Build safe FFmpeg input flags from yt-dlp's stream metadata.
+
+    FFmpeg is launched with an argument list (never a shell). HTTP header values
+    are not printed, to avoid leaking expiring URLs or credentials into logs.
+    """
+    args = [
+        '-nostdin', '-reconnect', '1', '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5', '-rw_timeout', '20000000',
+    ]
+    headers = info.get('http_headers') or {}
+    if not isinstance(headers, dict):
+        return args
+    supported = {'user-agent', 'referer', 'origin', 'accept', 'accept-language',
+                 'authorization', 'cookie'}
+    lines = []
+    for key, value in headers.items():
+        if not isinstance(key, str) or key.lower() not in supported:
+            continue
+        if not isinstance(value, str) or not value or len(value) > 4096:
+            continue
+        if '\r' in key or '\n' in key or '\r' in value or '\n' in value:
+            continue
+        lines.append(f'{key}: {value}\r\n')
+    if lines:
+        args.extend(['-headers', ''.join(lines)])
+    return args
+
+
+def ffmpeg_before_options(info: dict) -> str:
+    # discord.py's FFmpegPCMAudio splits this string using shlex.split.
+    return ' '.join(shlex.quote(x) for x in ffmpeg_input_args(info))
+
+
+def ffmpeg_problem(stderr_text: str, code: int = 0) -> str:
+    """Classify FFmpeg errors without sending private media URLs to Discord/logs."""
+    val = stderr_text.lower()
+    if '403' in val or 'forbidden' in val:
+        return 'HTTP 403: source katrefed le serveur (possible restriction).'
+    if '401' in val or 'unauthorized' in val:
+        return 'HTTP 401: source kat7taj accès autorisé.'
+    if '429' in val or 'too many requests' in val:
+        return 'HTTP 429: source 7eddat demandes.'
+    if '404' in val or 'not found' in val:
+        return 'HTTP 404: lien audio expiré ou indisponible.'
+    if 'timed out' in val or 'timeout' in val:
+        return 'Timeout: source ma jawbatch l FFmpeg.'
+    if 'invalid data' in val or 'invalid argument' in val:
+        return 'Format non lisible par FFmpeg.'
+    if 'could not resolve' in val or 'name or service not known' in val:
+        return 'DNS: source ma t7ellatch men serveur.'
+    if 'ssl' in val or 'tls' in val or 'certificate' in val:
+        return 'HTTPS/TLS: connexion m3a source fchlat.'
+    if code:
+        return f'FFmpeg exit code {code}; check source availability.'
+    return 'FFmpeg ma sft ta PCM: 7taj diagnostic dyal source.'
+
+
+def probe_stream_sync(info: dict) -> tuple[bool, str]:
+    """Try to decode up to two seconds; checks remote media access, not Discord."""
+    stream_url = info.get('url')
+    if not isinstance(stream_url, str) or not stream_url.startswith(('https://', 'http://')):
+        return False, 'Source ma 3tat ta URL HTTP compatible.'
+    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error',
+           *ffmpeg_input_args(info), '-i', stream_url,
+           '-t', '2', '-vn', '-f', 's16le', '-ac', '2', '-ar', '48000', 'pipe:1']
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=35, check=False)
+    except subprocess.TimeoutExpired:
+        return False, 'FFmpeg timeout: source ma jawbatch.'
+    except (OSError, ValueError) as exc:
+        return False, f'FFmpeg start failed: {type(exc).__name__}'
+    decoded = len(proc.stdout)
+    if decoded >= 48000 * 2 * 2 // 2:
+        return True, f'FFmpeg decoded {decoded // 192000:.1f}s PCM (access OK).'
+    error_text = proc.stderr.decode('utf-8', 'replace')
+    return False, f'FFmpeg produced {decoded} bytes PCM. {ffmpeg_problem(error_text, proc.returncode)}'
+
+
+class MonitoredFFmpegAudio(discord.FFmpegPCMAudio):
+    """Track decoded PCM bytes, so Now Playing cannot mask FFmpeg failures."""
+    def __init__(self, *args, **kwargs):
+        self.pcm_bytes = 0
+        super().__init__(*args, **kwargs)
+
+    def read(self) -> bytes:
+        data = super().read()
+        self.pcm_bytes += len(data)
+        return data
+
+
 async def ensure_voice(interaction: discord.Interaction) -> Optional[MusicState]:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         await interaction.response.send_message('⛔ Had lcommande katkhdem ghir f server.', ephemeral=True)
@@ -397,19 +492,45 @@ async def advance(guild_id: int):
             stream_url = info.get('url')
             if not stream_url:
                 raise ValueError('Source audio indisponible')
-            audio = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
+            # FFmpeg needs the same request headers yt-dlp used to resolve the stream.
+            # Capture errors privately: FFmpeg diagnostics may otherwise include signed URLs.
+            ffmpeg_stderr = tempfile.TemporaryFile(mode='w+b')
+            try:
+                monitored_audio = MonitoredFFmpegAudio(
                     stream_url, executable=FFMPEG,
-                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                    before_options=ffmpeg_before_options(info),
                     options='-vn -loglevel error',
-                ), volume=st.volume,
-            )
+                    stderr=ffmpeg_stderr,
+                )
+            except Exception:
+                ffmpeg_stderr.close()
+                raise
+            audio = discord.PCMVolumeTransformer(monitored_audio, volume=st.volume)
             loop = asyncio.get_running_loop()
             def after_play(error):
-                if error:
-                    log.warning('Playback error: %s', error)
+                # The audio player calls this once the FFmpeg source has stopped.
+                try:
+                    ffmpeg_stderr.seek(0)
+                    stderr_text = ffmpeg_stderr.read(16000).decode('utf-8', 'replace')
+                except (OSError, ValueError):
+                    stderr_text = ''
+                finally:
+                    ffmpeg_stderr.close()
+                pcm_seconds = monitored_audio.pcm_bytes / 192000
+                if error or monitored_audio.pcm_bytes < 96000:
+                    reason = ffmpeg_problem(stderr_text, 0)
+                    log.warning('STREAM FAILED: guild=%s pcm=%.2fs reason=%s player_error=%s',
+                                guild_id, pcm_seconds, reason, type(error).__name__ if error else 'none')
+                    if st.channel:
+                        asyncio.run_coroutine_threadsafe(st.channel.send(
+                            embed=embed('STREAM AUDIO MA KHEDMATCH',
+                                '❌ yt-dlp l9a lghnya, walakin FFmpeg ma 9rach son.\n'
+                                f'**Diagnostic:** {reason}\n'
+                                'Jarrab `/testlink` b nafs lien, ou `/testffmpeg`.'),
+                        ), loop)
                 else:
-                    log.info('Playback ended: %s', next_track.title)
+                    log.info('STREAM FINISHED: guild=%s title=%r decoded=%.1fs',
+                             guild_id, next_track.title[:80], pcm_seconds)
                 asyncio.run_coroutine_threadsafe(advance(guild_id), loop)
             st.voice.play(audio, after=after_play)
             if st.channel:
@@ -911,11 +1032,15 @@ async def testlink(interaction: discord.Interaction, lien: str):
         stream_url = info.get('url')
         if not stream_url or not isinstance(stream_url, str):
             raise ValueError('Aucune URL audio directe')
-        await interaction.followup.send(embed=embed('TEST LINK • METADATA OK',
+        works, diagnostic = await asyncio.wait_for(
+            asyncio.to_thread(probe_stream_sync, info), timeout=42)
+        await interaction.followup.send(embed=embed('TEST LINK • SOURCE AUDIO',
             f'✅ yt-dlp 9ra lien: **{track.title}**\n'
-            '✅ L9a source audio potentielle.\n\n'
-            '⚠️ Had test ma kaydmench l audio fih son ou FFmpeg y9dr ytsal b serveur. '
-            'Jarrab `/sma3` w chof logs dyal CMD; ila `/testaudio` khddam, lmochkil f source.'), ephemeral=True)
+            + ('✅ **FFmpeg qra son:** ' if works else '❌ **FFmpeg ma 9rach son:** ')
+            + diagnostic + '\n\n'
+            + ('Jarrab `/sma3` daba.' if works else
+               'Hadchi y3ni lmochkil f source/FFmpeg, machi f Discord Voice.')),
+            ephemeral=True)
     except Exception as exc:
         log.warning('Test link failed: %s: %s', type(exc).__name__, str(exc)[:350])
         await interaction.followup.send(embed=embed('TEST LINK • MA KHEDMATCH',
