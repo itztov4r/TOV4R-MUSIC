@@ -4,13 +4,13 @@ No destructive operations: existing channels, categories and roles are preserved
 Requires Manage Guild and explicit confirmation. The bot needs Manage Channels
 and Manage Roles. Discord role hierarchy still applies.
 """
-import os
 import logging
 
 import discord
 from discord import app_commands
 
 log = logging.getLogger("tov4r.setup")
+TARGET_GUILD_ID = 1564283597173690380  # 1729 server only
 
 CATEGORIES = {
     "📌 INFORMATION": (
@@ -46,8 +46,7 @@ def plan(guild: discord.Guild):
 
 
 def guild_allowed(interaction: discord.Interaction) -> bool:
-    allowed = os.getenv("SERVER_SETUP_GUILD_ID", "").strip()
-    return bool(interaction.guild) and bool(allowed) and str(interaction.guild.id) == allowed
+    return interaction.guild is not None and interaction.guild.id == TARGET_GUILD_ID
 
 
 server = app_commands.Group(name="server", description="Safe setup for your Discord community")
