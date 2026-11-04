@@ -1,6 +1,8 @@
 """TOV4R MUSIC — free self-hosted Darija Discord music bot."""
 import asyncio
 import math
+import ipaddress
+import re
 import struct
 import logging
 import os
@@ -11,7 +13,8 @@ import shutil
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+import requests
 
 import discord
 from discord import app_commands
@@ -25,6 +28,10 @@ GUILD_ID = os.getenv('GUILD_ID', '').strip()
 COLOR = 0xED2446
 FFMPEG = os.getenv('FFMPEG_PATH', 'ffmpeg')
 MAX_QUEUE = 80
+MAX_PLAYLIST_IMPORT = min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30")))
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "").strip()
 OWNER_ID = int(os.getenv('OWNER_ID', '0') or '0')
 DJ_PRICE = os.getenv('DJ_PRICE', 'Prix à demander au propriétaire')
 DB_PATH = os.getenv('DJ_DB_PATH', 'dj_access.sqlite3')
@@ -67,6 +74,7 @@ class Track:
     duration: int = 0
     thumbnail: str = ''
     requester: str = 'Unknown'
+    search_fallback: str = ''
 
 @dataclass
 class MusicState:
@@ -97,46 +105,223 @@ def embed(title: str, description: str = '') -> discord.Embed:
     e.set_footer(text='TOV4R MUSIC • Darija Edition | Made for the community')
     return e
 
-def extract_sync(query: str, search: bool = True) -> dict:
+# ----- Multiple music sources / playable public playlists -----
+def safe_url(url: str) -> bool:
+    """Avoid private/local addresses and unsupported URL schemes."""
+    if len(url) > 1500:
+        return False
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme != 'https' or not host or host == 'localhost':
+            return False
+        if host.endswith(('.local', '.internal', '.localhost')):
+            return False
+        try:
+            return ipaddress.ip_address(host).is_global
+        except ValueError:
+            return True
+    except ValueError:
+        return False
+
+
+def spotify_type(url: str) -> tuple[str, str] | None:
+    try:
+        parsed = urlparse(url)
+        if (parsed.hostname or '').lower() not in {'open.spotify.com', 'play.spotify.com'}:
+            return None
+        parts = [part for part in parsed.path.split('/') if part]
+        if parts and parts[0].startswith('intl-'):
+            parts.pop(0)
+        if len(parts) >= 2 and parts[0] in {'track', 'album', 'playlist'} and re.fullmatch(r'[A-Za-z0-9]{22}', parts[1]):
+            return parts[0], parts[1]
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def playlist_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    path = parsed.path.lower()
+    if host in {'youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'}:
+        return bool(parse_qs(parsed.query).get('list')) or '/playlist' in path
+    if host.endswith('soundcloud.com'):
+        return '/sets/' in path
+    if host.endswith('bandcamp.com'):
+        return '/album/' in path
+    return False
+
+
+def extract_sync(query: str, search: bool = True, playlist: bool = False, limit: int = MAX_PLAYLIST_IMPORT) -> dict:
     opts = {
-        'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True,
-        'noplaylist': True, 'skip_download': True,
-        'extract_flat': 'in_playlist' if search else False,
-        'default_search': 'ytsearch1', 'socket_timeout': 20,
-        'retries': 2,
+        'format': 'bestaudio/best', 'quiet': True, 'no_warnings': False,
+        'noplaylist': not playlist, 'skip_download': True,
+        'extract_flat': 'in_playlist' if playlist or query.startswith('ytsearch') else False,
+        'playlistend': limit, 'default_search': 'auto', 'socket_timeout': 20,
+        'retries': 2, 'ignoreerrors': playlist,
+        'js_runtimes': {'node': {}},  # Node.js 22+ for YouTube JS challenges
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         result = ydl.extract_info(query, download=False)
     if not result:
-        raise ValueError('Ma l9it ta résultat.')
-    if 'entries' in result:
-        result = next((i for i in result['entries'] if i), None)
+        raise ValueError('Source ma t7ellatch. T2kked lien public w accessible.')
+    if not playlist and 'entries' in result:
+        result = next((entry for entry in result['entries'] if entry), None)
     if not result:
-        raise ValueError('Ma l9it ta résultat.')
+        raise ValueError('Ma l9it ta resultat f had source.')
     return result
 
-def safe_url(url: str) -> bool:
-    p = urlparse(url)
-    return p.scheme == 'https' and bool(p.netloc)
 
-async def find_track(text: str, requester: str) -> Track:
+def info_to_track(info: dict, requester: str, search_fallback: str = '') -> Track | None:
+    if not isinstance(info, dict):
+        return None
+    page = info.get('webpage_url') or info.get('original_url') or info.get('url') or ''
+    if not isinstance(page, str):
+        return None
+    if not safe_url(page):
+        video_id = info.get('id')
+        extractor = str(info.get('ie_key') or info.get('extractor_key') or '').lower()
+        if extractor in {'youtube', 'youtubeie'} and video_id and re.fullmatch(r'[A-Za-z0-9_-]{11}', str(video_id)):
+            page = 'https://www.youtube.com/watch?v=' + str(video_id)
+    if not safe_url(page):
+        return None
+    return Track(
+        title=str(info.get('title') or 'Music')[:180],
+        page_url=page,
+        duration=int(info.get('duration') or 0),
+        thumbnail=str(info.get('thumbnail') or ''),
+        requester=requester,
+        search_fallback=search_fallback,
+    )
+
+
+def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]:
     text = text.strip()
-    if not text or len(text) > 250:
-        raise ValueError('Kteb smiya dyal lghnya (max 250 caractères).')
+    if not text or len(text) > 1500:
+        raise ValueError('Kteb smiya wla lien (max 1500 caracteres).')
     if text.startswith(('http://', 'https://')):
         if not safe_url(text):
-            raise ValueError('3tini lien HTTPS s7i7.')
-        host = (urlparse(text).hostname or '').lower()
-        if host == 'spotify.com' or host.endswith('.spotify.com') or host == 'open.spotify.com':
-            raise ValueError('Spotify links ma fihomch source audio direct. Jarrab lien YouTube ou SoundCloud.')
-        query = text
+            raise ValueError('Lien HTTPS public w s7i7, bla adresse locale.')
+        if spotify_type(text) or urlparse(text).hostname == 'spotify.link':
+            raise ValueError('Spotify ma kay3tich son direct l Discord. Jarrab /spotifyinfo pour les infos, ou source audio autorisee.')
+        is_list = playlist_url(text)
+        info = extract_sync(text, playlist=is_list, limit=min(max_items, MAX_PLAYLIST_IMPORT))
+        if is_list and 'entries' in info:
+            result = [info_to_track(entry, requester) for entry in list(info['entries'])[:max_items] if entry]
+        else:
+            result = [info_to_track(info, requester)]
     else:
-        query = 'ytsearch1:' + text
-    info = await asyncio.to_thread(extract_sync, query)
-    url = info.get('webpage_url') or info.get('original_url') or info.get('url')
-    if not url or not safe_url(url):
-        raise ValueError('Had source ma t9drch ttsma3.')
-    return Track(str(info.get('title') or text)[:180], url, int(info.get('duration') or 0), str(info.get('thumbnail') or ''), requester)
+        # Search several candidates, not only one, then retry at playback if needed.
+        info = extract_sync('ytsearch5:' + text, playlist=True, limit=5)
+        entries = list(info.get('entries') or [])
+        result = [info_to_track(entry, requester, text) for entry in entries if entry]
+        result = [next((item for item in result if item), None)]
+    return [item for item in result if item][:max_items]
+
+
+async def find_tracks(text: str, requester: str, max_items: int) -> list[Track]:
+    if max_items <= 0:
+        raise ValueError('Queue 3amra.')
+    return await asyncio.wait_for(
+        asyncio.to_thread(lookup_tracks_sync, text, requester, max_items), timeout=100
+    )
+
+
+async def find_track(text: str, requester: str) -> Track:
+    result = await find_tracks(text, requester, 1)
+    if not result:
+        raise ValueError('Ma l9it ta resultat public.')
+    return result[0]
+
+
+def resolve_audio_sync(track: Track) -> dict:
+    """Resolve streaming media freshly. Search may try alternative public results."""
+    try:
+        info = extract_sync(track.page_url, playlist=False)
+        if info.get('url') and isinstance(info['url'], str):
+            return info
+    except Exception as exc:
+        if not track.search_fallback:
+            raise
+        log.warning('First search result unavailable: %s', type(exc).__name__)
+    if track.search_fallback:
+        candidates = extract_sync('ytsearch5:' + track.search_fallback, playlist=True, limit=5)
+        for item in list(candidates.get('entries') or [])[:5]:
+            candidate = info_to_track(item, track.requester)
+            if not candidate:
+                continue
+            try:
+                info = extract_sync(candidate.page_url, playlist=False)
+                if info.get('url'):
+                    return info
+            except Exception:
+                continue
+    raise ValueError('No playable audio from source; may be restricted or blocked.')
+
+
+# Spotify links: metadata-only, official authenticated API; no Spotify streaming.
+def spotify_access_token() -> str:
+    if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
+        raise ValueError('Spotify API: SPOTIFY_CLIENT_ID w SPOTIFY_CLIENT_SECRET khas-hom f Railway Variables.')
+    form = {'grant_type': 'client_credentials'}
+    if SPOTIFY_REFRESH_TOKEN:
+        form = {'grant_type': 'refresh_token', 'refresh_token': SPOTIFY_REFRESH_TOKEN}
+    r = requests.post('https://accounts.spotify.com/api/token',
+                      data=form, auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET), timeout=15)
+    if r.status_code != 200:
+        raise ValueError(f'Spotify authentication failed: HTTP {r.status_code}')
+    return str(r.json()['access_token'])
+
+
+def spotify_api(path: str, token: str, params: dict | None = None) -> dict:
+    r = requests.get('https://api.spotify.com/v1' + path,
+                     headers={'Authorization': 'Bearer ' + token}, params=params, timeout=15)
+    if r.status_code == 403:
+        raise ValueError('Spotify access refuse: playlist mashi dyalk/collaborateur aw API restrictions.')
+    if r.status_code != 200:
+        raise ValueError(f'Spotify API error HTTP {r.status_code}')
+    return r.json()
+
+
+def spotify_metadata_sync(link: str) -> tuple[str, list[str]]:
+    parsed = spotify_type(link)
+    if not parsed:
+        raise ValueError('Lien Spotify track, album ou playlist s7i7 matloub.')
+    kind, sid = parsed
+    if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET) and kind in {'track', 'album'}:
+        # Public oEmbed can show a title only, not give audio or a full album listing.
+        response = requests.get('https://open.spotify.com/oembed', params={'url': link}, timeout=12)
+        if response.status_code != 200:
+            raise ValueError(f'Spotify oEmbed HTTP {response.status_code}')
+        return f'Spotify {kind} (oEmbed)', [str(response.json().get('title', 'Titre non disponible'))[:170]]
+    token = spotify_access_token()
+    result: list[str] = []
+    def fmt(item: dict) -> str | None:
+        if not item or item.get('type') != 'track':
+            return None
+        artists = ', '.join(a.get('name','') for a in item.get('artists', []))
+        return f"{item.get('name','Music')} — {artists}"[:170]
+    if kind == 'track':
+        item = spotify_api(f'/tracks/{sid}', token)
+        return 'Spotify track', [fmt(item) or 'Track']
+    if kind == 'album':
+        item = spotify_api(f'/albums/{sid}', token)
+        page = spotify_api(f'/albums/{sid}/tracks', token, {'limit': 50})
+        for t in page.get('items', [])[:MAX_PLAYLIST_IMPORT]:
+            name = fmt(t)
+            if name: result.append(name)
+        return str(item.get('name') or 'Spotify album'), result
+    # In the current Spotify API, playlist-item retrieval may require owner or collaborator authorization.
+    if not SPOTIFY_REFRESH_TOKEN:
+        raise ValueError('Playlist Spotify: user OAuth w SPOTIFY_REFRESH_TOKEN khas-hom; accès owner/collab seulement.')
+    playlist = spotify_api(f'/playlists/{sid}', token)
+    page = spotify_api(f'/playlists/{sid}/items', token, {'limit': min(50, MAX_PLAYLIST_IMPORT)})
+    for row in page.get('items', []):
+        name = fmt(row.get('item') or row.get('track') or {})
+        if name: result.append(name)
+    return str(playlist.get('name') or 'Spotify playlist'), result
+
 
 async def ensure_voice(interaction: discord.Interaction) -> Optional[MusicState]:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -208,7 +393,7 @@ async def advance(guild_id: int):
             return
         try:
             # Refresh stream URLs at actual playback time to avoid expired URLs.
-            info = await asyncio.to_thread(extract_sync, next_track.page_url, False)
+            info = await asyncio.to_thread(resolve_audio_sync, next_track)
             stream_url = info.get('url')
             if not stream_url:
                 raise ValueError('Source audio indisponible')
@@ -345,7 +530,7 @@ async def ping(interaction: discord.Interaction):
         f'📡 Ping: {round(bot.latency * 1000)} ms', ephemeral=True)
 
 @bot.tree.command(name='sma3', description='🎵 Sma3 chi music: kteb smiya wla lien HTTPS')
-@app_commands.describe(ghnya='Smiya dyal lghnya wla lien HTTPS')
+@app_commands.describe(ghnya='Smiya, lien YouTube/SoundCloud ou playlist publique')
 async def sma3(interaction: discord.Interaction, ghnya: str):
     st = await ensure_voice(interaction)
     if not st: return
@@ -354,13 +539,17 @@ async def sma3(interaction: discord.Interaction, ghnya: str):
         await interaction.followup.send('📛 Queue 3amra (80 max).', ephemeral=True)
         return
     try:
-        track = await find_track(ghnya, interaction.user.display_name)
+        tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
+        if not tracks:
+            raise ValueError('Ma l9it ta track public w playable f had link.')
     except Exception as exc:
         log.warning('Track lookup failed: %s', exc)
-        await interaction.followup.send(embed=embed('MA L9ITOUCH', 'Ma l9itch had lghnya. Jarrab smiya okhra wla lien s7i7.'), ephemeral=True)
+        await interaction.followup.send(embed=embed('SOURCE NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
         return
-    st.queue.append(track)
-    await interaction.followup.send(embed=embed('TZADAT L QUEUE', f'✅ **{track.title}**\n🎤 {track.requester} • ⏱️ {duration(track.duration)}'))
+    st.queue.extend(tracks)
+    detail = f'✅ **{len(tracks)}** track(s) tzado l Queue.\n🎵 **{tracks[0].title}**'
+    if len(tracks) > 1: detail += f'\n📜 Playlist ({len(tracks)} titres) — `/list` bach tchouf lqueue.'
+    await interaction.followup.send(embed=embed('TZADAT L QUEUE', detail))
     if not st.current and not st.lock.locked():
         asyncio.create_task(advance(interaction.guild.id))
 
@@ -529,7 +718,7 @@ async def djrevoke(interaction: discord.Interaction, membre: discord.Member):
     await interaction.response.send_message(f'✅ DJ Premium t7yed mn {membre.mention}.', ephemeral=True)
 
 @bot.tree.command(name='djplay', description='💎 DJ: 7ett chi ghnya louwla f queue')
-@app_commands.describe(ghnya='Smiya wla lien HTTPS')
+@app_commands.describe(ghnya='Smiya, lien ou playlist publique')
 async def djplay(interaction: discord.Interaction, ghnya: str):
     if not await require_dj(interaction): return
     st = await ensure_voice(interaction)
@@ -539,13 +728,16 @@ async def djplay(interaction: discord.Interaction, ghnya: str):
         await interaction.followup.send('Queue 3amra.', ephemeral=True)
         return
     try:
-        track = await find_track(ghnya, interaction.user.display_name)
+        tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
+        if not tracks:
+            raise ValueError('Playlist/source non disponible.')
     except Exception as exc:
         log.warning('DJ play lookup failed: %s', exc)
-        await interaction.followup.send('❌ Ma l9itch had lghnya.', ephemeral=True)
+        await interaction.followup.send(f'❌ {str(exc)[:300]}', ephemeral=True)
         return
-    st.queue.appendleft(track)
-    await interaction.followup.send(embed=embed('DJ PRIORITY', f'💎 **{track.title}** tzadat louwla f queue!'), ephemeral=True)
+    for track in reversed(tracks):
+        st.queue.appendleft(track)
+    await interaction.followup.send(embed=embed('DJ PRIORITY', f'💎 **{len(tracks)} tracks** tzado louwlin!\n🎧 {tracks[0].title}'), ephemeral=True)
     if not st.current and not st.lock.locked():
         asyncio.create_task(advance(interaction.guild.id))
 
@@ -731,6 +923,26 @@ async def testlink(interaction: discord.Interaction, lien: str):
             'Jarrab lien YouTube/SoundCloud akhor, ou met a jour yt-dlp. '
             'Chof CMD logs bla ma tsift token.'), ephemeral=True)
 
+@bot.tree.command(name='spotifyinfo', description='🟢 Lien Spotify: afficher infos playlist/album/track (pas de stream)')
+@app_commands.describe(lien='Lien Spotify track/album/playlist')
+async def spotifyinfo(interaction: discord.Interaction, lien: str):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    if not spotify_type(lien):
+        await interaction.followup.send('❌ Lien open.spotify.com/track, /album ou /playlist requis.', ephemeral=True)
+        return
+    try:
+        title, titles = await asyncio.wait_for(asyncio.to_thread(spotify_metadata_sync, lien), timeout=65)
+        lines = '\n'.join(f'`{n:02}` {t[:130]}' for n, t in enumerate(titles[:15], 1))
+        extra = f'\n…et {len(titles)-15} autres.' if len(titles)>15 else ''
+        await interaction.followup.send(embed=embed('SPOTIFY • METADATA ONLY',
+            f'**{title}**\n{lines}{extra}\n\n🔗 [Ouvrir sur Spotify]({lien})\n'
+            '⚠️ L API fournit les infos, pas le son a diffuser sur Discord. '
+            'Pour jouer: utilise un lien audio qui permet sa diffusion.'), ephemeral=True)
+    except Exception as exc:
+        log.warning('Spotify metadata failed: %s', type(exc).__name__)
+        await interaction.followup.send(embed=embed('SPOTIFY NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
+
+
 @bot.tree.command(name='tov4r', description='🎛️ Panel + ga3 commandes + DJ Premium')
 async def tov4r(interaction: discord.Interaction):
     e = embed('TOV4R MUSIC • GUIDE & CONTROL ROOM',
@@ -738,7 +950,8 @@ async def tov4r(interaction: discord.Interaction):
         'Les commandes normales **FREE**, DJ Mode **Premium**.\n'
         '🔊 Dkhol l salon vocal, w kteb `/sma3` bach tbda!')
     e.add_field(name='🎵 MUSIC • FREE', value=(
-        '`/sma3` — chghl ghnya b smiya wla lien\n'
+        '`/sma3` — smiya, YouTube/SoundCloud/Bandcamp playlists\n'
+        '`/spotifyinfo` — infos Spotify (pas de streaming)\n'
         '`/jaw` — choix dyal vibe: lofi, gaming, chaabi, rap, phonk\n'
         '`/skot` — pause lmusic\n'
         '`/kml` — kmmel lmusic\n'

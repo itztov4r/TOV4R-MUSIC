@@ -1,6 +1,8 @@
-# TOV4R MUSIC - Python 3.13 64-bit (Windows)
-# Pin davey 0.1.5 for discord.py 2.7.1 voice compatibility.
+# TOV4R MUSIC — compatible local Windows/Python 3.13 voice versions
+# Use Node.js 22+ for YouTube EJS extraction
+# DJ data is stored locally using sqlite3 (standard library)
 discord.py[voice]==2.7.1
 davey==0.1.5
 python-dotenv>=1.0,<2
 yt-dlp[default]>=2026.10.1
+requests>=2.32,<3
