@@ -47,7 +47,7 @@ def plan(guild: discord.Guild):
 
 def guild_allowed(interaction: discord.Interaction) -> bool:
     allowed = os.getenv("SERVER_SETUP_GUILD_ID", "").strip()
-    return bool(interaction.guild) and (not allowed or str(interaction.guild.id) == allowed)
+    return bool(interaction.guild) and bool(allowed) and str(interaction.guild.id) == allowed
 
 
 server = app_commands.Group(name="server", description="Safe setup for your Discord community")
