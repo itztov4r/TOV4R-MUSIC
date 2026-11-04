@@ -676,6 +676,8 @@ class Controls(discord.ui.View):
 
 class Tov4rBot(commands.Bot):
     async def setup_hook(self):
+        from server_setup import register_server_commands
+        register_server_commands(self)
         self.add_view(Controls())
         # IMPORTANT: Always publish the global command tree.
         # Previously, setting GUILD_ID meant that only one server received commands.
