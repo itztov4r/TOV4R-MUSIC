@@ -31,7 +31,7 @@ GUILD_ID = os.getenv('GUILD_ID', '').strip()
 COLOR = 0xED2446
 FFMPEG = os.getenv('FFMPEG_PATH', 'ffmpeg')
 MAX_QUEUE = 80
-MAX_PLAYLIST_IMPORT = min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30")))
+MAX_PLAYLIST_IMPORT = max(1, min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30"))))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "").strip()
@@ -116,14 +116,17 @@ def safe_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or '').lower()
-        if parsed.scheme != 'https' or not host or host == 'localhost':
+        if parsed.scheme != 'https' or not host or host.rstrip('.') == 'localhost' or parsed.username is not None or parsed.password is not None:
             return False
-        if host.endswith(('.local', '.internal', '.localhost')):
+        if parsed.port not in (None, 443):
+            return False
+        if host.rstrip('.').endswith(('.local', '.internal', '.localhost')):
             return False
         try:
             return ipaddress.ip_address(host).is_global
         except ValueError:
-            return True
+            # Numeric aliases (127.1, 2130706433, 0x7f000001) may resolve locally.
+            return bool(re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*\.?', host))
     except ValueError:
         return False
 
@@ -161,9 +164,9 @@ def playlist_url(url: str) -> bool:
     path = parsed.path.lower()
     if host in {'youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'}:
         return bool(parse_qs(parsed.query).get('list')) or '/playlist' in path
-    if host.endswith('soundcloud.com'):
+    if host == 'soundcloud.com' or host.endswith('.soundcloud.com'):
         return '/sets/' in path
-    if host.endswith('bandcamp.com'):
+    if host == 'bandcamp.com' or host.endswith('.bandcamp.com'):
         return '/album/' in path
     return False
 
@@ -406,7 +409,7 @@ def ffmpeg_problem(stderr_text: str, code: int = 0) -> str:
 def probe_stream_sync(info: dict) -> tuple[bool, str]:
     """Try to decode up to two seconds; checks remote media access, not Discord."""
     stream_url = info.get('url')
-    if not isinstance(stream_url, str) or not stream_url.startswith(('https://', 'http://')):
+    if not isinstance(stream_url, str) or not safe_url(stream_url):
         return False, 'Source ma 3tat ta URL HTTP compatible.'
     cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error',
            *ffmpeg_input_args(info), '-i', stream_url,
@@ -419,7 +422,7 @@ def probe_stream_sync(info: dict) -> tuple[bool, str]:
         return False, f'FFmpeg start failed: {type(exc).__name__}'
     decoded = len(proc.stdout)
     if decoded >= 48000 * 2 * 2 // 2:
-        return True, f'FFmpeg decoded {decoded // 192000:.1f}s PCM (access OK).'
+        return True, f'FFmpeg decoded {decoded / 192000:.1f}s PCM (access OK).'
     error_text = proc.stderr.decode('utf-8', 'replace')
     return False, f'FFmpeg produced {decoded} bytes PCM. {ffmpeg_problem(error_text, proc.returncode)}'
 
@@ -1195,3 +1198,4 @@ if __name__ == '__main__':
     if not shutil.which(FFMPEG):
         raise SystemExit('FFmpeg not found. Install FFmpeg and put it in PATH, or set FFMPEG_PATH.')
     bot.run(TOKEN, log_handler=None)
+
