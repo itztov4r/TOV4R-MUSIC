@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0910">
+<meta name="description" content="TOV4R MUSIC : bot Discord musical. Aperçu des commandes, documentation et accès au site officiel.">
+<title>TOV4R MUSIC | Discord Bot</title>
+<style>
+:root{color-scheme:dark;--bg:#0a0910;--surface:#17131f;--line:#332838;--text:#f9f0f3;--muted:#b7a9b6;--accent:#ff4269;--accent2:#ffc0ce;font:16px/1.6 system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;min-width:0;overflow-x:clip;background:radial-gradient(ellipse at 95% 0%,#65173150,transparent 40%),var(--bg)}
+a{color:inherit;text-decoration:none}a:focus-visible,button:focus-visible{outline:3px solid #ffce7c;outline-offset:4px}
+.container{width:min(1100px,calc(100% - 36px));margin-inline:auto}
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:25px 0;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-size:1.1rem;font-weight:900;letter-spacing:.05em}
+.brand span{width:38px;height:38px;border:1px solid #e04668;border-radius:12px;display:grid;place-items:center;color:#ff6c8c;background:#361525}
+nav{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+nav a{padding:10px 13px;border-radius:12px;color:var(--muted);font-size:.9rem;min-height:44px}
+nav a:hover{background:#2b1c2c;color:white}
+.hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(260px,.85fr);gap:clamp(24px,6vw,68px);align-items:center;padding:clamp(54px,8vw,90px) 0 70px}
+.kicker{font-size:.77rem;letter-spacing:.18em;font-weight:800;color:var(--accent);text-transform:uppercase}
+h1{font-size:clamp(3rem,8vw,6.4rem);line-height:.95;letter-spacing:-.065em;margin:13px 0 23px}
+h1 em{color:var(--accent);font-style:normal}
+.lead{font-size:clamp(1rem,2.5vw,1.2rem);color:#d0c1ce;max-width:600px}
+.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
+.btn{display:inline-flex;justify-content:center;align-items:center;min-height:48px;padding:13px 19px;border-radius:12px;font-weight:800;text-align:center;font-size:.95rem}
+.btn-primary{background:var(--accent);color:#210610}
+.btn-secondary{border:1px solid #7a5265;background:#261b2c}
+.note{font-size:.83rem;color:#a99aa7;margin-top:22px}
+.visual{min-width:0;position:relative;min-height:365px;border-radius:28px;background:linear-gradient(135deg,#281520,#130d1a);border:1px solid #642b46;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.visual:before{content:"";position:absolute;width:290px;height:290px;border:30px solid #ed365348;border-radius:50%;box-shadow:0 0 120px #d52b5940;transform:rotate(-22deg)}
+.disc{width:220px;height:220px;border-radius:50%;display:grid;place-items:center;background:repeating-radial-gradient(circle,#1d1621 0px,#1d1621 3px,#33202a 4px,#120b12 6px);border:9px solid #0c0910;box-shadow:0 30px 50px #0008;z-index:1}
+.disc strong{width:89px;height:89px;border-radius:50%;background:linear-gradient(130deg,#f6476c,#7d1837);display:grid;place-items:center;font-size:1.7rem;letter-spacing:-.09em}
+.visual-label{position:absolute;left:22px;right:22px;bottom:22px;display:flex;gap:10px;justify-content:space-between;font-size:.68rem;letter-spacing:.16em;color:#e4adba;z-index:2}
+section.content{padding:18px 0 66px}
+.section-head{display:flex;justify-content:space-between;gap:18px;align-items:end;flex-wrap:wrap}
+h2{font-size:clamp(1.7rem,3.5vw,2.5rem);letter-spacing:-.035em;margin:0 0 18px}
+.muted{color:var(--muted);max-width:560px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:25px}
+.card{min-width:0;border:1px solid var(--line);background:linear-gradient(170deg,#1d1521,#100d15);border-radius:18px;padding:24px;box-shadow:0 15px 30px #04010427}
+.card .num{font-size:.75rem;color:#ff6e91;font-weight:800;letter-spacing:.13em}
+.card h3{font-size:1.16rem;margin:13px 0 8px}.card p{font-size:.93rem;color:var(--muted);margin:0}
+.commands{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}
+code{font:700 .88rem/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;background:#2e1a2b;color:#ffc1d0;border:1px solid #6e3550;padding:8px 12px;border-radius:9px}
+.callout{display:flex;align-items:center;justify-content:space-between;gap:22px;flex-wrap:wrap;padding:27px;margin-top:38px;background:#261628;border:1px solid #66364e;border-radius:18px}
+.callout p{color:var(--muted);margin:8px 0 0}
+footer{border-top:1px solid var(--line);color:#968795;font-size:.82rem;padding:25px 0 38px}
+@media(max-width:800px){.hero{grid-template-columns:minmax(0,1fr)}.visual{min-height:290px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:550px){.container{width:calc(100% - 28px)}header{padding:16px 0}nav{width:100%;gap:4px}nav a{padding:9px 10px;font-size:.82rem}.hero{padding:44px 0 36px;gap:26px}h1{font-size:clamp(3rem,15vw,5rem)}.actions{display:grid;grid-template-columns:minmax(0,1fr)}.btn{width:100%}.visual{min-height:260px}.disc{width:170px;height:170px}.disc strong{width:78px;height:78px}.visual-label{font-size:.56rem;letter-spacing:.1em}.grid{grid-template-columns:minmax(0,1fr)}.card{padding:22px}.callout{padding:22px}.commands{gap:8px}code{font-size:.82rem}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<header class="container"><a href="./" class="brand" aria-label="TOV4R MUSIC, accueil"><span>▶</span>TOV4R MUSIC</a><nav aria-label="Navigation principale"><a href="#fonctionnalites">Fonctionnalités</a><a href="#commandes">Commandes</a><a href="https://github.com/itztov4r/TOV4R-MUSIC">GitHub</a></nav></header>
+<main>
+<section class="hero container">
+<div><p class="kicker">Bot musical Discord • Python</p><h1>Turn up<br><em>your server.</em></h1>
+<p class="lead">TOV4R MUSIC est un projet de bot Discord pour organiser la musique dans un salon vocal, gérer une file d’attente et proposer des outils de diagnostic audio.</p>
+<div class="actions"><a class="btn btn-primary" href="https://discord.com/oauth2/authorize?client_id=1567328279265017968" target="_blank" rel="noopener noreferrer">Inviter le bot ↗</a><a class="btn btn-secondary" href="https://itztov4r.github.io/Tov4r-bot-/" target="_blank" rel="noopener noreferrer">Découvrir le site complet ↗</a></div>
+<p class="note">Page de présentation statique. L’accès au bot et la lecture musicale dépendent de son hébergement et de son état en temps réel.</p></div>
+<div class="visual" role="img" aria-label="Illustration originale d’un disque vinyle aux couleurs rouge et noir"><div class="disc"><strong>T4R</strong></div><div class="visual-label"><span>PYTHON / DISCORD</span><span>DESIGN BY TOV4R</span></div></div>
+</section>
+<section id="fonctionnalites" class="content container"><div class="section-head"><div><p class="kicker">À découvrir</p><h2>Musique, file d’attente,<br>outils utiles.</h2></div><p class="muted">Fonctions décrites dans le code source du projet. Certaines dépendent de services externes et de leur disponibilité.</p></div>
+<div class="grid">
+<article class="card"><span class="num">01 / MUSIQUE</span><h3>Lecture et contrôle</h3><p>Recherche par titre ou lien, pause, reprise, morceau suivant, volume et boucle.</p></article>
+<article class="card"><span class="num">02 / QUEUE</span><h3>Gérer la file</h3><p>Afficher les morceaux en attente, mélanger et nettoyer la file de lecture.</p></article>
+<article class="card"><span class="num">03 / DIAGNOSTIC</span><h3>Vérifier l'audio</h3><p>Commandes de test audio, FFmpeg, état vocal et liens pour mieux comprendre une panne.</p></article>
+</div></section>
+<section id="commandes" class="content container"><p class="kicker">Commandes du code actuel</p><h2>Contrôle rapide.</h2><p class="muted">Quelques commandes slash présentes dans <code>bot.py</code> :</p>
+<div class="commands"><code>/ping</code><code>/sma3</code><code>/skot</code><code>/kml</code><code>/next</code><code>/list</code><code>/volume</code><code>/status</code><code>/testaudio</code><code>/testffmpeg</code><code>/tov4r</code></div>
+<div class="callout"><div><h3 style="margin:0">Voir le vrai site de TOV4R MUSIC</h3><p>Interface complète, FAQ et découverte des commandes sur mobile et ordinateur.</p></div><a class="btn btn-primary" href="https://itztov4r.github.io/Tov4r-bot-/">Ouvrir le site ↗</a></div></section>
+</main>
+<footer><div class="container">© TOV4R • Projet Discord avec documentation publique • Ne publiez jamais de token ni de données confidentielles dans un dépôt.</div></footer>
+</body></html>
