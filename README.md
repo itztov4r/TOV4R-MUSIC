@@ -31,11 +31,42 @@ Configurez les variables d'environnement nécessaires à votre propre hébergeme
 
 Le `Dockerfile` installe Python, Node.js et FFmpeg, mais ne fournit pas d'hébergement gratuit 24/7 à lui seul.
 
+L'image inclut `bot.py` **et** `server_setup.py`. Un contrôle d'import à la
+construction évite de publier une image qui échoue au démarrage. Les commandes
+vocales accusent réception avant la connexion ; arrêter ou quitter annule aussi
+la préparation d'un morceau. La file reste limitée à 80 titres, y compris avec
+plusieurs demandes simultanées.
+
+Pour les accès DJ, `DJ_DB_PATH` peut viser un dossier de données (créé si
+nécessaire). Sur un hébergement à disque éphémère, montez un stockage persistant
+pour conserver ces accès lors d'un redéploiement. Aucun volume n'est créé
+automatiquement par le bot.
+
+## Vérification
+
+```bash
+python -m pip install -r requirements.txt pytest pytest-asyncio
+python -m pytest -q
+```
+
+Les tests couvrent le démarrage depuis les fichiers Docker, l'enregistrement des
+commandes sans réseau, les connexions concurrentes, l'annulation pendant la
+préparation audio, les limites de file, les erreurs de lecture en boucle, SQLite,
+la suppression des secrets dans les erreurs et un décodage PCM réel par FFmpeg.
+Ils ne se connectent pas à un serveur Discord et n'utilisent aucun token.
+
+Sur l'hébergement, vérifier ensuite la connexion Gateway et la synchronisation
+des commandes dans les logs. Un test d'écoute nécessite un utilisateur dans un
+salon vocal : `/testaudio`, `/testffmpeg`, puis `/sma3` avec un lien public autorisé.
+Une source qui refuse les IP d'hébergement (HTTP 403) peut encore échouer ; le bot
+signale cette erreur et passe au titre suivant au lieu de le boucler indéfiniment.
+
 ## Structure
 
 - `bot.py` : code Discord et commandes.
 - `requirements.txt` : dépendances Python.
 - `Dockerfile` : conteneur de déploiement.
+- `server_setup.py` : commandes de configuration facultatives, limitées au serveur autorisé.
 - `index.html` : page de présentation responsive et sans dépendances.
 
 ## Sécurité

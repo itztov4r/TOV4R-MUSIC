@@ -13,6 +13,8 @@ import tempfile
 import sqlite3
 import time
 import shutil
+from pathlib import Path
+from contextlib import contextmanager
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -31,7 +33,7 @@ GUILD_ID = os.getenv('GUILD_ID', '').strip()
 COLOR = 0xED2446
 FFMPEG = os.getenv('FFMPEG_PATH', 'ffmpeg')
 MAX_QUEUE = 80
-MAX_PLAYLIST_IMPORT = min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30")))
+MAX_PLAYLIST_IMPORT = max(1, min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30"))))
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "").strip()
@@ -39,11 +41,17 @@ OWNER_ID = int(os.getenv('OWNER_ID', '0') or '0')
 DJ_PRICE = os.getenv('DJ_PRICE', 'Prix à demander au propriétaire')
 DB_PATH = os.getenv('DJ_DB_PATH', 'dj_access.sqlite3')
 
+@contextmanager
 def open_db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.execute('CREATE TABLE IF NOT EXISTS dj_access (user_id INTEGER PRIMARY KEY, expires_at INTEGER NOT NULL)')
-    conn.commit()
-    return conn
+    path = Path(DB_PATH).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=15)
+    try:
+        conn.execute('CREATE TABLE IF NOT EXISTS dj_access (user_id INTEGER PRIMARY KEY, expires_at INTEGER NOT NULL)')
+        conn.commit()
+        yield conn
+    finally:
+        conn.close()
 
 def get_access(user_id: int) -> tuple[bool, int]:
     if OWNER_ID and user_id == OWNER_ID:
@@ -67,8 +75,38 @@ async def require_dj(interaction: discord.Interaction) -> bool:
     return True
 
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+def redact(text: str) -> str:
+    text = str(text)
+    for secret in (TOKEN, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN):
+        if secret:
+            text = text.replace(secret, '[redacted]')
+    return re.sub(r'https?://[^\s<>]+', '[URL]', text)
+
+
+def public_error(error: Exception) -> str:
+    return redact(str(error) or type(error).__name__)[:350]
+
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact(super().format(record))
+
+
+logging.basicConfig(level=logging.INFO)
+for handler in logging.getLogger().handlers:
+    handler.setFormatter(RedactingFormatter('%(asctime)s | %(levelname)s | %(message)s'))
 log = logging.getLogger('tov4r')
+
+
+class ExtractionLogger:
+    def debug(self, message):
+        pass
+
+    def warning(self, message):
+        log.warning('Extractor: %s', redact(message))
+
+    def error(self, message):
+        log.warning('Extractor: %s', redact(message))
 
 @dataclass
 class Track:
@@ -90,6 +128,9 @@ class MusicState:
     channel: Optional[discord.abc.Messageable] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     idle_task: Optional[asyncio.Task] = None
+    connection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    generation: int = 0
+    playback_id: int = 0
 
 states: dict[int, MusicState] = {}
 
@@ -116,14 +157,18 @@ def safe_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or '').lower()
-        if parsed.scheme != 'https' or not host or host == 'localhost':
+        if (parsed.scheme != 'https' or not host or host.rstrip('.') == 'localhost'
+                or parsed.username is not None or parsed.password is not None):
             return False
+        # Accessing .port also rejects malformed/out-of-range port numbers.
+        _ = parsed.port
+        host = host.rstrip('.')
         if host.endswith(('.local', '.internal', '.localhost')):
             return False
         try:
             return ipaddress.ip_address(host).is_global
         except ValueError:
-            return True
+            return '.' in host and not re.fullmatch(r'[0-9.]+', host)
     except ValueError:
         return False
 
@@ -176,6 +221,7 @@ def extract_sync(query: str, search: bool = True, playlist: bool = False, limit:
         'playlistend': limit, 'default_search': 'auto', 'socket_timeout': 20,
         'retries': 2, 'ignoreerrors': playlist,
         'js_runtimes': {'node': {}},  # Node.js 22+ for YouTube JS challenges
+        'logger': ExtractionLogger(),
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         result = ydl.extract_info(query, download=False)
@@ -479,7 +525,40 @@ class MonitoredFFmpegAudio(discord.FFmpegPCMAudio):
         return data
 
 
-async def ensure_voice(interaction: discord.Interaction) -> Optional[MusicState]:
+async def respond(interaction: discord.Interaction, *args, **kwargs):
+    """Reply through the webhook after a slow operation has been deferred."""
+    if interaction.response.is_done():
+        return await interaction.followup.send(*args, **kwargs)
+    return await interaction.response.send_message(*args, **kwargs)
+
+
+def invalidate_playback(st: MusicState):
+    """Invalidate callbacks and lookups that were started before stop/leave/test."""
+    st.generation += 1
+    st.playback_id += 1
+    st.current = None
+    st.skip_requested = True
+    if st.idle_task:
+        st.idle_task.cancel()
+        st.idle_task = None
+
+
+def enqueue_tracks(st: MusicState, tracks: list[Track], generation: int,
+                   *, priority: bool = False) -> list[Track]:
+    # No awaits: concurrent requests cannot overfill the queue after extraction.
+    if generation != st.generation or not st.voice or not st.voice.is_connected():
+        raise ValueError('La demande a été annulée après stop/déconnexion.')
+    accepted = tracks[:max(0, MAX_QUEUE - len(st.queue))]
+    if not accepted:
+        raise ValueError('Queue 3amra (80 max).')
+    if priority:
+        st.queue.extendleft(reversed(accepted))
+    else:
+        st.queue.extend(accepted)
+    return accepted
+
+
+async def ensure_voice(interaction: discord.Interaction, *, ephemeral: bool = False) -> Optional[MusicState]:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         await interaction.response.send_message('⛔ Had lcommande katkhdem ghir f server.', ephemeral=True)
         return None
@@ -488,20 +567,31 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[MusicState]
         await interaction.response.send_message('🔊 Dkhol l chi salon vocal louwel!', ephemeral=True)
         return None
     st = state_for(interaction.guild.id)
+    # Discord requires an initial response within three seconds; voice joining
+    # can take 25 seconds. Defer before the first network operation.
+    await interaction.response.defer(thinking=True, ephemeral=ephemeral)
     try:
-        if interaction.guild.voice_client:
-            st.voice = interaction.guild.voice_client
-            if st.voice.channel != ch:
-                # Prevent remote control from a different voice channel.
-                await interaction.response.send_message('⛔ Khassk tkoun f nafs salon vocal m3a bot.', ephemeral=True)
-                return None
-        else:
-            st.voice = await ch.connect(timeout=25, reconnect=True)
+        async with st.connection_lock:
+            voice = interaction.guild.voice_client
+            if voice and not voice.is_connected():
+                await voice.disconnect(force=True)
+                invalidate_playback(st)
+                voice = None
+            if voice:
+                st.voice = voice
+                if voice.channel != ch:
+                    await respond(interaction, '⛔ Khassk tkoun f nafs salon vocal m3a bot.', ephemeral=True)
+                    return None
+            else:
+                st.voice = await ch.connect(timeout=25, reconnect=True)
     except (discord.DiscordException, asyncio.TimeoutError) as exc:
-        log.warning('Voice join failed: %s', exc)
-        await interaction.response.send_message('❌ Ma9drtch ndkhol vocal. Chof Connect/Speak permissions.', ephemeral=True)
+        log.warning('Voice join failed: %s', type(exc).__name__)
+        await respond(interaction, '❌ Ma9drtch ndkhol vocal. Chof Connect/Speak permissions.', ephemeral=True)
         return None
     st.channel = interaction.channel
+    if st.idle_task:
+        st.idle_task.cancel()
+    st.idle_task = asyncio.create_task(idle_disconnect(interaction.guild.id))
     return st
 
 async def member_state(interaction: discord.Interaction) -> Optional[MusicState]:
@@ -520,7 +610,11 @@ async def idle_disconnect(guild_id: int):
     try:
         await asyncio.sleep(180)
         st = state_for(guild_id)
-        if not st.current and not st.queue and st.voice and st.voice.is_connected():
+        if (not st.current and not st.queue and st.voice and st.voice.is_connected()
+                and not st.voice.is_playing() and not st.voice.is_paused()):
+            # Do not cancel this task itself while it is disconnecting.
+            st.idle_task = None
+            invalidate_playback(st)
             await st.voice.disconnect()
             st.voice = None
     except asyncio.CancelledError:
@@ -529,6 +623,8 @@ async def idle_disconnect(guild_id: int):
 async def advance(guild_id: int):
     st = state_for(guild_id)
     async with st.lock:
+        if st.voice and (st.voice.is_playing() or st.voice.is_paused()):
+            return
         if st.idle_task:
             st.idle_task.cancel()
             st.idle_task = None
@@ -543,6 +639,9 @@ async def advance(guild_id: int):
             return
         st.skip_requested = False
         st.current = next_track
+        generation = st.generation
+        st.playback_id += 1
+        playback_id = st.playback_id
         if not st.voice or not st.voice.is_connected():
             st.current = None
             st.queue.clear()
@@ -550,6 +649,9 @@ async def advance(guild_id: int):
         try:
             # Refresh stream URLs at actual playback time to avoid expired URLs.
             info, diagnostic = await asyncio.to_thread(playable_audio_sync, next_track)
+            if (generation != st.generation or playback_id != st.playback_id
+                    or not st.voice or not st.voice.is_connected()):
+                return
             if not info:
                 # A playback error is not the same thing as a song not existing.
                 raise ValueError(diagnostic)
@@ -571,6 +673,14 @@ async def advance(guild_id: int):
                 raise
             audio = discord.PCMVolumeTransformer(monitored_audio, volume=st.volume)
             loop = asyncio.get_running_loop()
+            async def finished(failed: bool):
+                if generation != st.generation or playback_id != st.playback_id:
+                    return
+                if failed:
+                    # Never loop a failed stream forever.
+                    st.current = None
+                await advance(guild_id)
+
             def after_play(error):
                 # The audio player calls this once the FFmpeg source has stopped.
                 try:
@@ -581,6 +691,8 @@ async def advance(guild_id: int):
                 finally:
                     ffmpeg_stderr.close()
                 pcm_seconds = monitored_audio.pcm_bytes / 192000
+                if generation != st.generation or playback_id != st.playback_id:
+                    return
                 if error or monitored_audio.pcm_bytes < 96000:
                     reason = ffmpeg_problem(stderr_text, 0)
                     log.warning('STREAM FAILED: guild=%s pcm=%.2fs reason=%s player_error=%s',
@@ -595,8 +707,13 @@ async def advance(guild_id: int):
                 else:
                     log.info('STREAM FINISHED: guild=%s title=%r decoded=%.1fs',
                              guild_id, next_track.title[:80], pcm_seconds)
-                asyncio.run_coroutine_threadsafe(advance(guild_id), loop)
-            st.voice.play(audio, after=after_play)
+                asyncio.run_coroutine_threadsafe(finished(bool(error) or monitored_audio.pcm_bytes < 96000), loop)
+            try:
+                st.voice.play(audio, after=after_play)
+            except Exception:
+                audio.cleanup()
+                ffmpeg_stderr.close()
+                raise
             if st.channel:
                 try:
                     e = embed('DABA KATTSMA3', f'**[{next_track.title}]({next_track.page_url})**\n⏱️ `{duration(next_track.duration)}` • 🎤 `{next_track.requester}`')
@@ -606,14 +723,14 @@ async def advance(guild_id: int):
                 except discord.HTTPException:
                     pass
         except Exception as exc:
-            log.warning('Cannot play %s: %s', next_track.title, exc)
+            if generation != st.generation:
+                return
+            log.warning('Playback failed: guild=%s error=%s', guild_id, type(exc).__name__)
             st.current = None
             if st.channel:
                 try:
                     # A short, sanitized diagnosis is much more useful than 'not found'.
-                    reason = str(exc)
-                    if 'http' in reason.lower() and '://' in reason:
-                        reason = 'Lien non disponible pour le serveur.'
+                    reason = public_error(exc)
                     await st.channel.send(embed=embed('SOURCE MA KHEDMATCH',
                         '❌ Had source ma qdrach yqraha serveur.\n'
                         f'**Cause:** {reason[:160]}\n'
@@ -648,6 +765,13 @@ async def do_skip(interaction: discord.Interaction):
         st.skip_requested = True
         st.voice.stop()
         await interaction.response.send_message(embed=embed('NEXT', '⏭️ Dzna lghnya!'))
+    elif st.current and st.lock.locked():
+        # Skip can also cancel a source while yt-dlp/FFmpeg is preparing it.
+        st.playback_id += 1
+        st.current = None
+        st.skip_requested = True
+        asyncio.create_task(advance(interaction.guild.id))
+        await interaction.response.send_message(embed=embed('NEXT', '⏭️ Dzna lghnya li katwjed!'))
     else:
         await interaction.response.send_message('Ma kayn walo bach tskipih.', ephemeral=True)
 
@@ -712,7 +836,20 @@ async def on_guild_join(guild: discord.Guild):
 
 @bot.event
 async def on_guild_remove(guild: discord.Guild):
+    st = states.pop(guild.id, None)
+    if st:
+        invalidate_playback(st)
     log.info('LEFT SERVER: %s | ID: %s', guild.name, guild.id)
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if bot.user and member.id == bot.user.id and before.channel and after.channel is None:
+        st = state_for(member.guild.id)
+        invalidate_playback(st)
+        st.queue.clear()
+        st.loop = False
+        st.voice = None
 
 @bot.tree.command(name='ping', description='✅ TOV4R MUSIC: verifier que le bot repond dans ce serveur')
 async def ping(interaction: discord.Interaction):
@@ -729,7 +866,7 @@ async def ping(interaction: discord.Interaction):
 async def sma3(interaction: discord.Interaction, ghnya: str):
     st = await ensure_voice(interaction)
     if not st: return
-    await interaction.response.defer(thinking=True)
+    generation = st.generation
     if len(st.queue) >= MAX_QUEUE:
         await interaction.followup.send('📛 Queue 3amra (80 max).', ephemeral=True)
         return
@@ -737,11 +874,11 @@ async def sma3(interaction: discord.Interaction, ghnya: str):
         tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
         if not tracks:
             raise ValueError('Ma l9it ta track public w playable f had link.')
+        tracks = enqueue_tracks(st, tracks, generation)
     except Exception as exc:
-        log.warning('Track lookup failed: %s', exc)
-        await interaction.followup.send(embed=embed('SOURCE NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
+        log.warning('Track lookup failed: %s', type(exc).__name__)
+        await interaction.followup.send(embed=embed('SOURCE NON DISPONIBLE', public_error(exc)), ephemeral=True)
         return
-    st.queue.extend(tracks)
     detail = f'✅ **{len(tracks)}** track(s) tzado l Queue.\n🎵 **{tracks[0].title}**'
     if len(tracks) > 1: detail += f'\n📜 Playlist ({len(tracks)} titres) — `/list` bach tchouf lqueue.'
     await interaction.followup.send(embed=embed('TZADAT L QUEUE', detail))
@@ -760,17 +897,17 @@ async def sma3(interaction: discord.Interaction, ghnya: str):
 async def jaw(interaction: discord.Interaction, mood: app_commands.Choice[str]):
     st = await ensure_voice(interaction)
     if not st: return
-    await interaction.response.defer(thinking=True)
+    generation = st.generation
     if len(st.queue) >= MAX_QUEUE:
         await interaction.followup.send('Queue 3amra.', ephemeral=True)
         return
     try:
         track = await find_track(mood.value, interaction.user.display_name)
+        enqueue_tracks(st, [track], generation)
     except Exception as exc:
-        log.warning('Mood search failed: %s', exc)
+        log.warning('Mood search failed: %s', type(exc).__name__)
         await interaction.followup.send('❌ Mal9itch music l had jaw daba.', ephemeral=True)
         return
-    st.queue.append(track)
     await interaction.followup.send(embed=embed('JAW TOV4R', f'🔥 **{mood.name}**\n✅ Tzadat: **{track.title}**'))
     if not st.current and not st.lock.locked():
         asyncio.create_task(advance(interaction.guild.id))
@@ -793,11 +930,11 @@ async def saf(interaction: discord.Interaction):
     if not st: return
     st.queue.clear()
     st.loop = False
-    st.skip_requested = True
+    invalidate_playback(st)
     if st.voice and (st.voice.is_playing() or st.voice.is_paused()):
         st.voice.stop()
-    else:
-        st.current = None
+    if st.voice and st.voice.is_connected():
+        st.idle_task = asyncio.create_task(idle_disconnect(interaction.guild.id))
     await interaction.response.send_message(embed=embed('SAFI', '🧹 Queue tms7at w music w9fat.'))
 
 def queue_embed(st: MusicState) -> discord.Embed:
@@ -858,12 +995,12 @@ async def khrej(interaction: discord.Interaction):
     if not st: return
     st.queue.clear()
     st.loop = False
-    st.current = None
-    st.skip_requested = True
+    invalidate_playback(st)
+    await interaction.response.defer(thinking=True)
     if st.voice:
         await st.voice.disconnect(force=True)
         st.voice = None
-    await interaction.response.send_message(embed=embed('BSSLAMA', '👋 TOV4R khrej mn vocal.'))
+    await interaction.followup.send(embed=embed('BSSLAMA', '👋 TOV4R khrej mn vocal.'))
 
 @bot.tree.command(name='dj', description='💎 DJ Premium status, prix w accès')
 async def dj(interaction: discord.Interaction):
@@ -916,9 +1053,9 @@ async def djrevoke(interaction: discord.Interaction, membre: discord.Member):
 @app_commands.describe(ghnya='Smiya, lien ou playlist publique')
 async def djplay(interaction: discord.Interaction, ghnya: str):
     if not await require_dj(interaction): return
-    st = await ensure_voice(interaction)
+    st = await ensure_voice(interaction, ephemeral=True)
     if not st: return
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    generation = st.generation
     if len(st.queue) >= MAX_QUEUE:
         await interaction.followup.send('Queue 3amra.', ephemeral=True)
         return
@@ -926,12 +1063,11 @@ async def djplay(interaction: discord.Interaction, ghnya: str):
         tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
         if not tracks:
             raise ValueError('Playlist/source non disponible.')
+        tracks = enqueue_tracks(st, tracks, generation, priority=True)
     except Exception as exc:
-        log.warning('DJ play lookup failed: %s', exc)
-        await interaction.followup.send(f'❌ {str(exc)[:300]}', ephemeral=True)
+        log.warning('DJ play lookup failed: %s', type(exc).__name__)
+        await interaction.followup.send(f'❌ {public_error(exc)}', ephemeral=True)
         return
-    for track in reversed(tracks):
-        st.queue.appendleft(track)
     await interaction.followup.send(embed=embed('DJ PRIORITY', f'💎 **{len(tracks)} tracks** tzado louwlin!\n🎧 {tracks[0].title}'), ephemeral=True)
     if not st.current and not st.lock.locked():
         asyncio.create_task(advance(interaction.guild.id))
@@ -942,13 +1078,12 @@ async def djremove(interaction: discord.Interaction, numero: app_commands.Range[
     if not await require_dj(interaction): return
     st = await member_state(interaction)
     if not st: return
-    async with st.lock:
-        items = list(st.queue)
-        if numero > len(items):
-            await interaction.response.send_message('❌ Had numéro makaynch f queue.', ephemeral=True)
-            return
-        removed = items.pop(numero - 1)
-        st.queue = deque(items)
+    items = list(st.queue)
+    if numero > len(items):
+        await interaction.response.send_message('❌ Had numéro makaynch f queue.', ephemeral=True)
+        return
+    removed = items.pop(numero - 1)
+    st.queue = deque(items)
     await interaction.response.send_message(embed=embed('DJ REMOVE', f'🗑️ T7ydat **{removed.title}**.'), ephemeral=True)
 
 @bot.tree.command(name='djmove', description='💎 DJ: bddl tartib dyal queue')
@@ -957,14 +1092,13 @@ async def djmove(interaction: discord.Interaction, mn: app_commands.Range[int, 1
     if not await require_dj(interaction): return
     st = await member_state(interaction)
     if not st: return
-    async with st.lock:
-        items = list(st.queue)
-        if mn > len(items) or l > len(items):
-            await interaction.response.send_message('❌ Numéro kharej queue.', ephemeral=True)
-            return
-        track = items.pop(mn - 1)
-        items.insert(l - 1, track)
-        st.queue = deque(items)
+    items = list(st.queue)
+    if mn > len(items) or l > len(items):
+        await interaction.response.send_message('❌ Numéro kharej queue.', ephemeral=True)
+        return
+    track = items.pop(mn - 1)
+    items.insert(l - 1, track)
+    st.queue = deque(items)
     await interaction.response.send_message(embed=embed('DJ MOVE', f'🎛️ **{track.title}**: `{mn}` → `{l}`'), ephemeral=True)
 
 @bot.tree.command(name='djclear', description='💎 DJ: khwi queue bla ma tstop music')
@@ -972,9 +1106,8 @@ async def djclear(interaction: discord.Interaction):
     if not await require_dj(interaction): return
     st = await member_state(interaction)
     if not st: return
-    async with st.lock:
-        count = len(st.queue)
-        st.queue.clear()
+    count = len(st.queue)
+    st.queue.clear()
     await interaction.response.send_message(embed=embed('DJ CLEAR', f'🧹 Tmsa7o {count} ghnya mn queue.'), ephemeral=True)
 
 @bot.tree.command(name='status', description='🩺 Wach TOV4R connected w kaytsma3 f vocal?')
@@ -1025,10 +1158,9 @@ class PureTone(discord.AudioSource):
 
 
 async def prepare_audio_test(interaction: discord.Interaction):
-    st = await ensure_voice(interaction)
+    st = await ensure_voice(interaction, ephemeral=True)
     if not st:
         return None
-    await interaction.response.defer(thinking=True, ephemeral=True)
     vc = st.voice
     if not vc or not vc.is_connected():
         await interaction.followup.send('❌ Bot ma connectach l vocal.', ephemeral=True)
@@ -1036,11 +1168,12 @@ async def prepare_audio_test(interaction: discord.Interaction):
     # Cancel ongoing music before testing (otherwise testaudio only said "busy").
     st.loop = False
     st.queue.clear()
-    st.skip_requested = True
+    invalidate_playback(st)
     if vc.is_playing() or vc.is_paused():
         vc.stop()
         await asyncio.sleep(0.4)
     st.current = None
+    st.idle_task = asyncio.create_task(idle_disconnect(interaction.guild.id))
     return vc
 
 
@@ -1113,7 +1246,7 @@ async def testlink(interaction: discord.Interaction, lien: str):
                'Hadchi y3ni lmochkil f source/FFmpeg, machi f Discord Voice.')),
             ephemeral=True)
     except Exception as exc:
-        log.warning('Test link failed: %s: %s', type(exc).__name__, str(exc)[:350])
+        log.warning('Test link failed: %s: %s', type(exc).__name__, public_error(exc))
         await interaction.followup.send(embed=embed('TEST LINK • MA KHEDMATCH',
             f'❌ Had lien ma t7ellch: **{type(exc).__name__}**\n'
             'Jarrab lien YouTube/SoundCloud akhor, ou met a jour yt-dlp. '
@@ -1136,7 +1269,7 @@ async def spotifyinfo(interaction: discord.Interaction, lien: str):
             'Pour jouer: utilise un lien audio qui permet sa diffusion.'), ephemeral=True)
     except Exception as exc:
         log.warning('Spotify metadata failed: %s', type(exc).__name__)
-        await interaction.followup.send(embed=embed('SPOTIFY NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
+        await interaction.followup.send(embed=embed('SPOTIFY NON DISPONIBLE', public_error(exc)), ephemeral=True)
 
 
 @bot.tree.command(name='tov4r', description='🎛️ Panel + ga3 commandes + DJ Premium')
