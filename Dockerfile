@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
-COPY bot.py .
+COPY bot.py server_setup.py .
+# Fail the build, rather than crash after login, if a runtime module is missing.
+RUN python -c "import bot; import server_setup"
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "bot.py"]
