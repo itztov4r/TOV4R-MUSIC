@@ -693,6 +693,9 @@ async def advance(guild_id: int):
                 pcm_seconds = monitored_audio.pcm_bytes / 192000
                 if generation != st.generation or playback_id != st.playback_id:
                     return
+                if st.skip_requested:
+                    asyncio.run_coroutine_threadsafe(finished(False), loop)
+                    return
                 if error or monitored_audio.pcm_bytes < 96000:
                     reason = ffmpeg_problem(stderr_text, 0)
                     log.warning('STREAM FAILED: guild=%s pcm=%.2fs reason=%s player_error=%s',

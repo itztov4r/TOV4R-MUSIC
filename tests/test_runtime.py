@@ -224,9 +224,11 @@ async def test_duplicate_advance_does_not_consume_next_track():
 
 
 @pytest.mark.asyncio
-async def test_failed_looped_stream_moves_on(monkeypatch):
+@pytest.mark.parametrize('manual_skip', [False, True])
+async def test_failed_looped_stream_moves_on(monkeypatch, manual_skip):
     state = music.state_for(10)
     state.voice = Voice()
+    state.channel = SimpleNamespace(send=AsyncMock())
     state.current = track('broken')
     state.loop = True
     state.queue.append(track('working'))
@@ -257,10 +259,14 @@ async def test_failed_looped_stream_moves_on(monkeypatch):
 
     state.voice.play.side_effect = second_start
     state.voice.playing = False
+    state.skip_requested = manual_skip
     state.voice.after(None)
     await asyncio.wait_for(played.wait(), 2)
     assert calls == ['broken', 'working']
     assert state.current.title == 'working'
+    if manual_skip:
+        assert all('STREAM AUDIO MA KHEDMATCH' not in call.kwargs['embed'].title
+                   for call in state.channel.send.call_args_list)
 
 
 @pytest.mark.parametrize('url', [
