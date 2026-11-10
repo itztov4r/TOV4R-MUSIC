@@ -87,7 +87,7 @@ def redact(text: str) -> str:
 def public_error(error: Exception) -> str:
     message = str(error)
     if 'sign in to confirm' in message.lower() or 'not a bot' in message.lower():
-        return 'YouTube bloque l acces men serveur. Jarrab smiya dyal lghnya ou lien SoundCloud public.'
+        return 'YouTube talab verification men serveur; had lien ma t9rach. Jarrab /testlink bach tchecki.'
     return redact(message or type(error).__name__)[:350]
 
 
@@ -227,6 +227,12 @@ def extract_sync(query: str, search: bool = True, playlist: bool = False, limit:
         'js_runtimes': {'node': {}},  # Node.js 22+ for YouTube JS challenges
         'logger': ExtractionLogger(),
     }
+    provider_home = os.getenv('YOUTUBE_POT_SERVER_HOME', '').strip()
+    if provider_home:
+        opts['extractor_args'] = {
+            'youtube': {'player_client': ['mweb']},
+            'youtubepot-bgutilscript': {'server_home': [provider_home]},
+        }
     with yt_dlp.YoutubeDL(opts) as ydl:
         result = ydl.extract_info(query, download=False)
     if not result:
@@ -268,8 +274,8 @@ def search_words(text: str) -> set[str]:
 
 
 def search_tracks_sync(text: str, requester: str) -> list[Track]:
-    """Prefer SoundCloud so text requests do not depend on YouTube access."""
-    for prefix in ('scsearch3:', 'ytsearch3:'):
+    """Search YouTube; never replace a YouTube request with another service."""
+    for prefix in ('ytsearch3:',):
         try:
             info = extract_sync(prefix + text, playlist=True, limit=3)
             wanted = search_words(text)
@@ -282,7 +288,7 @@ def search_tracks_sync(text: str, requester: str) -> list[Track]:
                 return tracks
         except Exception as exc:
             log.warning('Search provider failed: %s (%s)', prefix, type(exc).__name__)
-    raise ValueError('Ma l9it ta source accessible. Jarrab lien SoundCloud public ou audio HTTPS.')
+    raise ValueError('Ma l9it ta resultat YouTube accessible. Jarrab lien direct ou /testlink.')
 
 
 def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]:
@@ -778,7 +784,7 @@ async def advance(guild_id: int):
                     await st.channel.send(embed=embed('SOURCE MA KHEDMATCH',
                         '❌ Had source ma qdrach yqraha serveur.\n'
                         f'**Cause:** {reason[:160]}\n'
-                        '💡 Jarrab `/sma3` b smiya dyal lghnya, ou lien SoundCloud public.\n'
+                        '💡 `/testlink` kaychof wach nafs lien YouTube accessible.\n'
                         'Ghadi njarrbo li mn b3dha.'))
                 except discord.HTTPException:
                     pass
@@ -868,8 +874,32 @@ intents = discord.Intents.default()
 intents.voice_states = True
 bot = Tov4rBot(command_prefix='!', intents=intents, help_command=None)
 
+_youtube_probe_started = False
+
+
+async def youtube_startup_probe():
+    import sys
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(Path(__file__).with_name('source_probe.py')),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            log.info('YOUTUBE SOURCE PROBE: %s', stdout.decode('utf-8', 'replace')[:1200])
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            log.warning('YOUTUBE SOURCE PROBE: timeout')
+    except OSError as exc:
+        log.warning('YOUTUBE SOURCE PROBE: %s', type(exc).__name__)
+
+
 @bot.event
 async def on_ready():
+    global _youtube_probe_started
+    if os.getenv('YOUTUBE_PROBE_URL') and not _youtube_probe_started:
+        _youtube_probe_started = True
+        asyncio.create_task(youtube_startup_probe())
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name='/sma3 • TOV4R MUSIC'))
     log.info('Online as %s', bot.user)
     log.info('SERVERS CONNECTED: %d | IDs: %s', len(bot.guilds), ', '.join(str(g.id) for g in bot.guilds) or '(none)')

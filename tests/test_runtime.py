@@ -315,24 +315,26 @@ def test_real_ffmpeg_decodes_stereo_pcm():
         source.cleanup()
 
 
-def test_name_search_uses_soundcloud_first(monkeypatch):
+def test_name_search_uses_youtube(monkeypatch):
     calls = []
     def extract(query, **kwargs):
         calls.append(query)
         return {'entries': [{'title': 'Song', 'webpage_url': 'https://soundcloud.com/artist/song'}]}
     monkeypatch.setattr(music, 'extract_sync', extract)
     tracks = music.lookup_tracks_sync('Song', 'listener', 1)
-    assert calls == ['scsearch3:Song']
+    assert calls == ['ytsearch3:Song']
     assert tracks[0].search_fallback == 'Song'
 
 
-def test_search_provider_failure_uses_next_provider(monkeypatch):
+def test_youtube_failure_does_not_replace_source(monkeypatch):
+    calls = []
     def extract(query, **kwargs):
-        if query.startswith('scsearch'):
-            raise ValueError('Unavailable')
-        return {'entries': [{'title': 'Song', 'webpage_url': 'https://youtube.com/watch?v=abcdefghijk'}]}
+        calls.append(query)
+        raise ValueError('YouTube unavailable')
     monkeypatch.setattr(music, 'extract_sync', extract)
-    assert music.lookup_tracks_sync('Song', 'listener', 1)[0].page_url.startswith('https://youtube.com')
+    with pytest.raises(ValueError):
+        music.lookup_tracks_sync('Song', 'listener', 1)
+    assert calls == ['ytsearch3:Song']
 
 
 @pytest.mark.parametrize('extract_failure', [True, False])
@@ -365,14 +367,25 @@ def test_explicit_link_not_replaced_by_different_recording(monkeypatch):
 
 def test_youtube_auth_error_is_actionable():
     message = music.public_error(ValueError('Sign in to confirm you’re not a bot. Use --cookies'))
-    assert 'SoundCloud' in message
+    assert '/testlink' in message
     assert '--cookies' not in message
 
 
 def test_search_rejects_wrong_artist(monkeypatch):
     def extract(query, **kwargs):
-        if query.startswith('scsearch'):
-            return {'entries': [{'title': 'Desperado', 'uploader': 'Unrelated artist', 'webpage_url': 'https://soundcloud.com/other/desperado'}]}
-        return {'entries': [{'title': 'Stormy - Desperado', 'webpage_url': 'https://youtube.com/watch?v=abcdefghijk'}]}
+        return {'entries': [
+            {'title': 'Desperado', 'uploader': 'Unrelated artist', 'webpage_url': 'https://youtube.com/watch?v=11111111111'},
+            {'title': 'Stormy - Desperado', 'webpage_url': 'https://youtube.com/watch?v=abcdefghijk'}]}
     monkeypatch.setattr(music, 'extract_sync', extract)
     assert music.lookup_tracks_sync('Stormy Desperado', 'listener', 1)[0].title == 'Stormy - Desperado'
+
+
+def test_youtube_provider_configuration(monkeypatch):
+    monkeypatch.setenv('YOUTUBE_POT_SERVER_HOME', '/opt/bgutil')
+    extractor = MagicMock()
+    extractor.return_value.__enter__.return_value.extract_info.return_value = {'url': 'https://example.com/audio.mp3'}
+    monkeypatch.setattr(music.yt_dlp, 'YoutubeDL', extractor)
+    music.extract_sync('https://youtube.com/watch?v=abcdefghijk')
+    args = extractor.call_args.args[0]['extractor_args']
+    assert args['youtube']['player_client'] == ['mweb']
+    assert args['youtubepot-bgutilscript']['server_home'] == ['/opt/bgutil']

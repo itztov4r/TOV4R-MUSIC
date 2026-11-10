@@ -75,16 +75,18 @@ Ne publiez jamais de token Discord, de mot de passe, de clé privée ou de secre
 
 Projet de Mehdi Hmaiss / TOV4R.
 
-## Recherche musicale et accès aux sources
+## Lecture YouTube
 
-`/sma3` avec un nom cherche d'abord sur SoundCloud, puis sur YouTube si le
-premier moteur ne renvoie aucun résultat. Les résultats de recherche sont
-vérifiés avec FFmpeg avant lecture ; un autre résultat est essayé si
-l'extraction ou le décodage échoue. Le titre et le lien affichés correspondent
-au résultat réellement sélectionné.
+Les liens et recherches par nom utilisent YouTube, sans remplacement par SoundCloud.
+Le conteneur intègre le fournisseur PO Token bgutil 2.0.2 et utilise le client
+mweb recommandé par yt-dlp. Cela améliore la compatibilité, sans garantir que
+YouTube accepte tous les liens depuis l'hébergement.
 
-Un lien explicite conserve son enregistrement d'origine. Si YouTube refuse
-l'accès depuis l'hébergement (« Sign in to confirm you're not a bot »), le bot
-ne peut pas garantir sa lecture : utiliser une recherche par nom ou un lien
-SoundCloud public / audio HTTPS accessible. Aucune session personnelle ni
-cookie de navigateur n'est nécessaire pour la recherche publique SoundCloud.
+`YOUTUBE_POT_SERVER_HOME` désigne le fournisseur local dans le conteneur.
+Le fournisseur est lancé à la demande ; aucun port supplémentaire n'est exposé.
+`YOUTUBE_PROBE_URL` permet un diagnostic facultatif au démarrage : décodage de
+2 secondes par FFmpeg, limité à 90 secondes au total, sans connexion vocale ni
+message Discord. Les résultats sont dans les logs `YOUTUBE SOURCE PROBE`.
+
+Les sources privées, supprimées, restreintes ou refusées par YouTube peuvent
+échouer. Les diagnostics ne prouvent pas que le son a été entendu dans Discord.
