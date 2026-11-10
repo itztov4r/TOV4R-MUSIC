@@ -4,6 +4,7 @@ import math
 import ipaddress
 import re
 import struct
+import unicodedata
 import logging
 import os
 import random
@@ -84,7 +85,10 @@ def redact(text: str) -> str:
 
 
 def public_error(error: Exception) -> str:
-    return redact(str(error) or type(error).__name__)[:350]
+    message = str(error)
+    if 'sign in to confirm' in message.lower() or 'not a bot' in message.lower():
+        return 'YouTube bloque l acces men serveur. Jarrab smiya dyal lghnya ou lien SoundCloud public.'
+    return redact(message or type(error).__name__)[:350]
 
 
 class RedactingFormatter(logging.Formatter):
@@ -257,6 +261,30 @@ def info_to_track(info: dict, requester: str, search_fallback: str = '') -> Trac
     )
 
 
+def search_words(text: str) -> set[str]:
+    text = unicodedata.normalize('NFKD', text.casefold())
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    return set(re.findall(r'[^\W_]+', text, re.UNICODE)) - {'official', 'audio', 'video', 'lyrics'}
+
+
+def search_tracks_sync(text: str, requester: str) -> list[Track]:
+    """Prefer SoundCloud so text requests do not depend on YouTube access."""
+    for prefix in ('scsearch3:', 'ytsearch3:'):
+        try:
+            info = extract_sync(prefix + text, playlist=True, limit=3)
+            wanted = search_words(text)
+            entries = [item for item in list(info.get('entries') or [])[:3]
+                       if item and wanted <= search_words(
+                           str(item.get('title') or '') + ' ' + str(item.get('uploader') or ''))]
+            tracks = [info_to_track(item, requester, text) for item in entries]
+            tracks = [track for track in tracks if track]
+            if tracks:
+                return tracks
+        except Exception as exc:
+            log.warning('Search provider failed: %s (%s)', prefix, type(exc).__name__)
+    raise ValueError('Ma l9it ta source accessible. Jarrab lien SoundCloud public ou audio HTTPS.')
+
+
 def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]:
     text = text.strip()
     if not text or len(text) > 1500:
@@ -277,11 +305,7 @@ def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]
             else:
                 result = [info_to_track(info, requester)]
     else:
-        # Search several candidates, not only one, then retry at playback if needed.
-        info = extract_sync('ytsearch5:' + text, playlist=True, limit=5)
-        entries = list(info.get('entries') or [])
-        result = [info_to_track(entry, requester, text) for entry in entries if entry]
-        result = [next((item for item in result if item), None)]
+        result = search_tracks_sync(text, requester)[:1]
     return [item for item in result if item][:max_items]
 
 
@@ -301,30 +325,13 @@ async def find_track(text: str, requester: str) -> Track:
 
 
 def resolve_audio_sync(track: Track) -> dict:
-    """Resolve audio freshly, or accept a direct public HTTPS audio/stream URL."""
+    """Resolve exactly this track; candidate retries happen after audio preflight."""
     if direct_audio_url(track.page_url):
         return {'url': track.page_url, 'title': track.title, 'http_headers': {}}
-    try:
-        info = extract_sync(track.page_url, playlist=False)
-        if info.get('url') and isinstance(info['url'], str):
-            return info
-    except Exception as exc:
-        if not track.search_fallback:
-            raise
-        log.warning('First search result unavailable: %s', type(exc).__name__)
-    if track.search_fallback:
-        candidates = extract_sync('ytsearch5:' + track.search_fallback, playlist=True, limit=5)
-        for item in list(candidates.get('entries') or [])[:5]:
-            candidate = info_to_track(item, track.requester)
-            if not candidate:
-                continue
-            try:
-                info = extract_sync(candidate.page_url, playlist=False)
-                if info.get('url'):
-                    return info
-            except Exception:
-                continue
-    raise ValueError('No playable audio from source; may be restricted or blocked.')
+    info = extract_sync(track.page_url, playlist=False)
+    if not isinstance(info.get('url'), str) or not info['url']:
+        raise ValueError('Source ma 3tat ta audio accessible.')
+    return info
 
 
 # Spotify links: metadata-only, official authenticated API; no Spotify streaming.
@@ -470,7 +477,7 @@ def probe_stream_sync(info: dict) -> tuple[bool, str]:
     return False, f'FFmpeg produced {decoded} bytes PCM. {ffmpeg_problem(error_text, proc.returncode)}'
 
 
-def playable_audio_sync(track: Track) -> tuple[dict, str]:
+def probe_track_audio_sync(track: Track) -> tuple[dict, str]:
     """Preflight audio on the hosting machine before telling Discord 'now playing'.
 
     When a selected media format fails, try up to two alternate public audio
@@ -510,6 +517,40 @@ def playable_audio_sync(track: Track) -> tuple[dict, str]:
             log.info('An alternate media format is playable for guild music source.')
             return alt, alt_message
         message = alt_message
+    return {}, message
+
+
+def playable_audio_sync(track: Track) -> tuple[dict, str]:
+    """Try independent search results when extraction OR audio decoding fails.
+
+    Explicit URLs stay on the requested recording; only name searches retry
+    candidates. Update displayed metadata only after a candidate decodes.
+    """
+    try:
+        info, message = probe_track_audio_sync(track)
+        if info:
+            return info, message
+    except Exception as exc:
+        message = public_error(exc)
+    if not track.search_fallback:
+        return {}, message
+    try:
+        candidates = search_tracks_sync(track.search_fallback, track.requester)
+    except Exception as exc:
+        return {}, public_error(exc)
+    for candidate in candidates:
+        if candidate.page_url == track.page_url:
+            continue
+        try:
+            info, message = probe_track_audio_sync(candidate)
+            if info:
+                track.title = str(info.get('title') or candidate.title)[:180]
+                track.page_url = candidate.page_url
+                track.duration = int(info.get('duration') or candidate.duration)
+                track.thumbnail = str(info.get('thumbnail') or candidate.thumbnail)
+                return info, message
+        except Exception as exc:
+            message = public_error(exc)
     return {}, message
 
 
@@ -737,7 +778,7 @@ async def advance(guild_id: int):
                     await st.channel.send(embed=embed('SOURCE MA KHEDMATCH',
                         '❌ Had source ma qdrach yqraha serveur.\n'
                         f'**Cause:** {reason[:160]}\n'
-                        '⚠️ HTTP 403 kay3ni source rafdat l acces; ma kaynch fix garanti.\n'
+                        '💡 Jarrab `/sma3` b smiya dyal lghnya, ou lien SoundCloud public.\n'
                         'Ghadi njarrbo li mn b3dha.'))
                 except discord.HTTPException:
                     pass

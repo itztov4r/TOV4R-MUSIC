@@ -74,3 +74,17 @@ signale cette erreur et passe au titre suivant au lieu de le boucler indéfinime
 Ne publiez jamais de token Discord, de mot de passe, de clé privée ou de secret Spotify. N'utilisez pas d'informations réelles dans les captures ou les démonstrations publiques.
 
 Projet de Mehdi Hmaiss / TOV4R.
+
+## Recherche musicale et accès aux sources
+
+`/sma3` avec un nom cherche d'abord sur SoundCloud, puis sur YouTube si le
+premier moteur ne renvoie aucun résultat. Les résultats de recherche sont
+vérifiés avec FFmpeg avant lecture ; un autre résultat est essayé si
+l'extraction ou le décodage échoue. Le titre et le lien affichés correspondent
+au résultat réellement sélectionné.
+
+Un lien explicite conserve son enregistrement d'origine. Si YouTube refuse
+l'accès depuis l'hébergement (« Sign in to confirm you're not a bot »), le bot
+ne peut pas garantir sa lecture : utiliser une recherche par nom ou un lien
+SoundCloud public / audio HTTPS accessible. Aucune session personnelle ni
+cookie de navigateur n'est nécessaire pour la recherche publique SoundCloud.

@@ -313,3 +313,66 @@ def test_real_ffmpeg_decodes_stereo_pcm():
         assert any(any(frame) for frame in frames)
     finally:
         source.cleanup()
+
+
+def test_name_search_uses_soundcloud_first(monkeypatch):
+    calls = []
+    def extract(query, **kwargs):
+        calls.append(query)
+        return {'entries': [{'title': 'Song', 'webpage_url': 'https://soundcloud.com/artist/song'}]}
+    monkeypatch.setattr(music, 'extract_sync', extract)
+    tracks = music.lookup_tracks_sync('Song', 'listener', 1)
+    assert calls == ['scsearch3:Song']
+    assert tracks[0].search_fallback == 'Song'
+
+
+def test_search_provider_failure_uses_next_provider(monkeypatch):
+    def extract(query, **kwargs):
+        if query.startswith('scsearch'):
+            raise ValueError('Unavailable')
+        return {'entries': [{'title': 'Song', 'webpage_url': 'https://youtube.com/watch?v=abcdefghijk'}]}
+    monkeypatch.setattr(music, 'extract_sync', extract)
+    assert music.lookup_tracks_sync('Song', 'listener', 1)[0].page_url.startswith('https://youtube.com')
+
+
+@pytest.mark.parametrize('extract_failure', [True, False])
+def test_search_retries_after_extraction_or_pcm_failure(monkeypatch, extract_failure):
+    first = music.Track(title='Old', page_url='https://soundcloud.com/a/old', requester='listener', search_fallback='Song')
+    second = music.Track(title='Actual song', page_url='https://soundcloud.com/a/new', requester='listener')
+    def probe(track):
+        if track.page_url == first.page_url:
+            if extract_failure:
+                raise ValueError('Sign in to confirm you are not a bot')
+            return {}, 'HTTP 403'
+        return {'url': 'https://example.com/audio.mp3', 'title': 'Actual recording', 'duration': 120}, 'PCM OK'
+    monkeypatch.setattr(music, 'probe_track_audio_sync', probe)
+    monkeypatch.setattr(music, 'search_tracks_sync', lambda *args: [second])
+    info, message = music.playable_audio_sync(first)
+    assert info and message == 'PCM OK'
+    assert first.title == 'Actual recording'
+    assert first.page_url == second.page_url
+    assert first.duration == 120
+
+
+def test_explicit_link_not_replaced_by_different_recording(monkeypatch):
+    track = music.Track(title='Song', page_url='https://youtube.com/watch?v=abcdefghijk', requester='listener')
+    monkeypatch.setattr(music, 'probe_track_audio_sync', lambda _: ({}, 'blocked'))
+    search = MagicMock()
+    monkeypatch.setattr(music, 'search_tracks_sync', search)
+    assert music.playable_audio_sync(track) == ({}, 'blocked')
+    search.assert_not_called()
+
+
+def test_youtube_auth_error_is_actionable():
+    message = music.public_error(ValueError('Sign in to confirm you’re not a bot. Use --cookies'))
+    assert 'SoundCloud' in message
+    assert '--cookies' not in message
+
+
+def test_search_rejects_wrong_artist(monkeypatch):
+    def extract(query, **kwargs):
+        if query.startswith('scsearch'):
+            return {'entries': [{'title': 'Desperado', 'uploader': 'Unrelated artist', 'webpage_url': 'https://soundcloud.com/other/desperado'}]}
+        return {'entries': [{'title': 'Stormy - Desperado', 'webpage_url': 'https://youtube.com/watch?v=abcdefghijk'}]}
+    monkeypatch.setattr(music, 'extract_sync', extract)
+    assert music.lookup_tracks_sync('Stormy Desperado', 'listener', 1)[0].title == 'Stormy - Desperado'
