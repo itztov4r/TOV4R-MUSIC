@@ -1,1197 +1,631 @@
-"""TOV4R MUSIC V7 — URL support and preflight playback checking."""
+from __future__ import annotations
 import asyncio
-import math
-import ipaddress
-import re
-import struct
+import collections
+import io
+import json
 import logging
 import os
-import random
-import shlex
-import subprocess
-import tempfile
-import sqlite3
+from pathlib import Path
+import re
+import secrets
 import time
-import shutil
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Optional
-from urllib.parse import urlparse, parse_qs
-import requests
-
+from datetime import timedelta
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
-import yt_dlp
+from PIL import Image, ImageDraw, ImageFont
+from store import Store, level
 
 load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
-GUILD_ID = os.getenv('GUILD_ID', '').strip()
-COLOR = 0xED2446
-FFMPEG = os.getenv('FFMPEG_PATH', 'ffmpeg')
-MAX_QUEUE = 80
-MAX_PLAYLIST_IMPORT = min(50, int(os.getenv("PLAYLIST_IMPORT_LIMIT", "30")))
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
-SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "").strip()
-OWNER_ID = int(os.getenv('OWNER_ID', '0') or '0')
-DJ_PRICE = os.getenv('DJ_PRICE', 'Prix à demander au propriétaire')
-DB_PATH = os.getenv('DJ_DB_PATH', 'dj_access.sqlite3')
-
-def open_db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.execute('CREATE TABLE IF NOT EXISTS dj_access (user_id INTEGER PRIMARY KEY, expires_at INTEGER NOT NULL)')
-    conn.commit()
-    return conn
-
-def get_access(user_id: int) -> tuple[bool, int]:
-    if OWNER_ID and user_id == OWNER_ID:
-        return True, 0
-    with open_db() as conn:
-        row = conn.execute('SELECT expires_at FROM dj_access WHERE user_id=?', (user_id,)).fetchone()
-    if not row:
-        return False, 0
-    return row[0] > int(time.time()), row[0]
-
-async def require_dj(interaction: discord.Interaction) -> bool:
-    valid, _ = get_access(interaction.user.id)
-    if not valid:
-        await interaction.response.send_message(
-            embed=embed('DJ MODE • PREMIUM',
-                '🔒 Had lcommande ghir l DJ Premium.\n'
-                f'💳 Prix: **{DJ_PRICE}**\n'
-                '📩 Tواصل مع مول البوت، وبعد ما يتأكد الأداء غادي يفعّل ليك DJ Mode.\n'
-                'ℹ️ Bot ma kayjme3 ta paiement b rassou.'), ephemeral=True)
-        return False
-    return True
-
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger('tov4r')
+ROOT = Path(__file__).parent
+COLOR = 0xef3340
 
-@dataclass
-class Track:
-    title: str
-    page_url: str
-    duration: int = 0
-    thumbnail: str = ''
-    requester: str = 'Unknown'
-    search_fallback: str = ''
-
-@dataclass
-class MusicState:
-    queue: deque = field(default_factory=deque)
-    current: Optional[Track] = None
-    voice: Optional[discord.VoiceClient] = None
-    loop: bool = False
-    volume: float = 0.60
-    skip_requested: bool = False
-    channel: Optional[discord.abc.Messageable] = None
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    idle_task: Optional[asyncio.Task] = None
-
-states: dict[int, MusicState] = {}
-
-def state_for(guild_id: int) -> MusicState:
-    return states.setdefault(guild_id, MusicState())
-
-def duration(seconds: int) -> str:
-    if not seconds:
-        return 'LIVE / ?'
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    return f'{h}:{m:02}:{s:02}' if h else f'{m}:{s:02}'
-
-def embed(title: str, description: str = '') -> discord.Embed:
-    e = discord.Embed(title=f'🎧 {title}', description=description, color=COLOR)
-    e.set_footer(text='TOV4R MUSIC • Darija Edition | Made for the community')
+def embed(title, description=''):
+    e = discord.Embed(title=title, description=description, color=COLOR)
+    e.set_footer(text='Tov4r Bot • Made for your people')
     return e
 
-# ----- Multiple music sources / playable public playlists -----
-def safe_url(url: str) -> bool:
-    """Avoid private/local addresses and unsupported URL schemes."""
-    if len(url) > 1500:
-        return False
-    try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or '').lower()
-        if parsed.scheme != 'https' or not host or host == 'localhost':
-            return False
-        if host.endswith(('.local', '.internal', '.localhost')):
-            return False
-        try:
-            return ipaddress.ip_address(host).is_global
-        except ValueError:
-            return True
-    except ValueError:
-        return False
+async def reply(i, text):
+    if i.response.is_done(): await i.followup.send(text, ephemeral=True)
+    else: await i.response.send_message(text, ephemeral=True)
 
+def is_staff(member, cfg):
+    return member.guild_permissions.manage_guild or any(r.id == cfg['support_role'] for r in member.roles)
 
+def safe_role(role, guild):
+    # Self-service must never grant moderation/administrative permissions.
+    dangerous = ('administrator','manage_guild','manage_roles','manage_channels','kick_members',
+                 'ban_members','moderate_members','manage_messages','manage_webhooks','mention_everyone',
+                 'manage_threads','manage_events','mute_members','deafen_members','move_members','view_audit_log')
+    return not role.is_default() and not role.managed and role < guild.me.top_role and not any(getattr(role.permissions,k,False) for k in dangerous)
 
-DIRECT_AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac', '.webm', '.m3u8'}
-
-
-def direct_audio_url(url: str) -> bool:
-    """Explicit public HTTPS media file/stream URLs; no scraping required."""
-    if not safe_url(url):
-        return False
-    path = urlparse(url).path.lower()
-    return any(path.endswith(ext) for ext in DIRECT_AUDIO_EXTENSIONS)
-
-
-def spotify_type(url: str) -> tuple[str, str] | None:
-    try:
-        parsed = urlparse(url)
-        if (parsed.hostname or '').lower() not in {'open.spotify.com', 'play.spotify.com'}:
-            return None
-        parts = [part for part in parsed.path.split('/') if part]
-        if parts and parts[0].startswith('intl-'):
-            parts.pop(0)
-        if len(parts) >= 2 and parts[0] in {'track', 'album', 'playlist'} and re.fullmatch(r'[A-Za-z0-9]{22}', parts[1]):
-            return parts[0], parts[1]
-    except (ValueError, IndexError):
-        return None
-    return None
-
-
-def playlist_url(url: str) -> bool:
-    parsed = urlparse(url)
-    host = (parsed.hostname or '').lower()
-    path = parsed.path.lower()
-    if host in {'youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'}:
-        return bool(parse_qs(parsed.query).get('list')) or '/playlist' in path
-    if host.endswith('soundcloud.com'):
-        return '/sets/' in path
-    if host.endswith('bandcamp.com'):
-        return '/album/' in path
-    return False
-
-
-def extract_sync(query: str, search: bool = True, playlist: bool = False, limit: int = MAX_PLAYLIST_IMPORT) -> dict:
-    opts = {
-        'format': 'bestaudio/best', 'quiet': True, 'no_warnings': False,
-        'noplaylist': not playlist, 'skip_download': True,
-        'extract_flat': 'in_playlist' if playlist or query.startswith('ytsearch') else False,
-        'playlistend': limit, 'default_search': 'auto', 'socket_timeout': 20,
-        'retries': 2, 'ignoreerrors': playlist,
-        'js_runtimes': {'node': {}},  # Node.js 22+ for YouTube JS challenges
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        result = ydl.extract_info(query, download=False)
-    if not result:
-        raise ValueError('Source ma t7ellatch. T2kked lien public w accessible.')
-    if not playlist and 'entries' in result:
-        result = next((entry for entry in result['entries'] if entry), None)
-    if not result:
-        raise ValueError('Ma l9it ta resultat f had source.')
-    return result
-
-
-def info_to_track(info: dict, requester: str, search_fallback: str = '') -> Track | None:
-    if not isinstance(info, dict):
-        return None
-    page = info.get('webpage_url') or info.get('original_url') or info.get('url') or ''
-    if not isinstance(page, str):
-        return None
-    if not safe_url(page):
-        video_id = info.get('id')
-        extractor = str(info.get('ie_key') or info.get('extractor_key') or '').lower()
-        if extractor in {'youtube', 'youtubeie'} and video_id and re.fullmatch(r'[A-Za-z0-9_-]{11}', str(video_id)):
-            page = 'https://www.youtube.com/watch?v=' + str(video_id)
-    if not safe_url(page):
-        return None
-    return Track(
-        title=str(info.get('title') or 'Music')[:180],
-        page_url=page,
-        duration=int(info.get('duration') or 0),
-        thumbnail=str(info.get('thumbnail') or ''),
-        requester=requester,
-        search_fallback=search_fallback,
-    )
-
-
-def lookup_tracks_sync(text: str, requester: str, max_items: int) -> list[Track]:
-    text = text.strip()
-    if not text or len(text) > 1500:
-        raise ValueError('Kteb smiya wla lien (max 1500 caracteres).')
-    if text.startswith(('http://', 'https://')):
-        if not safe_url(text):
-            raise ValueError('Lien HTTPS public w s7i7, bla adresse locale.')
-        if spotify_type(text) or urlparse(text).hostname == 'spotify.link':
-            raise ValueError('Spotify ma kay3tich son direct l Discord. Jarrab /spotifyinfo pour les infos, ou source audio autorisee.')
-        if direct_audio_url(text):
-            filename = urlparse(text).path.rsplit('/', 1)[-1] or 'Audio stream'
-            result = [Track(title=filename[:180], page_url=text, requester=requester)]
-        else:
-            is_list = playlist_url(text)
-            info = extract_sync(text, playlist=is_list, limit=min(max_items, MAX_PLAYLIST_IMPORT))
-            if is_list and 'entries' in info:
-                result = [info_to_track(entry, requester) for entry in list(info['entries'])[:max_items] if entry]
-            else:
-                result = [info_to_track(info, requester)]
-    else:
-        # Search several candidates, not only one, then retry at playback if needed.
-        info = extract_sync('ytsearch5:' + text, playlist=True, limit=5)
-        entries = list(info.get('entries') or [])
-        result = [info_to_track(entry, requester, text) for entry in entries if entry]
-        result = [next((item for item in result if item), None)]
-    return [item for item in result if item][:max_items]
-
-
-async def find_tracks(text: str, requester: str, max_items: int) -> list[Track]:
-    if max_items <= 0:
-        raise ValueError('Queue 3amra.')
-    return await asyncio.wait_for(
-        asyncio.to_thread(lookup_tracks_sync, text, requester, max_items), timeout=100
-    )
-
-
-async def find_track(text: str, requester: str) -> Track:
-    result = await find_tracks(text, requester, 1)
-    if not result:
-        raise ValueError('Ma l9it ta resultat public.')
-    return result[0]
-
-
-def resolve_audio_sync(track: Track) -> dict:
-    """Resolve audio freshly, or accept a direct public HTTPS audio/stream URL."""
-    if direct_audio_url(track.page_url):
-        return {'url': track.page_url, 'title': track.title, 'http_headers': {}}
-    try:
-        info = extract_sync(track.page_url, playlist=False)
-        if info.get('url') and isinstance(info['url'], str):
-            return info
-    except Exception as exc:
-        if not track.search_fallback:
-            raise
-        log.warning('First search result unavailable: %s', type(exc).__name__)
-    if track.search_fallback:
-        candidates = extract_sync('ytsearch5:' + track.search_fallback, playlist=True, limit=5)
-        for item in list(candidates.get('entries') or [])[:5]:
-            candidate = info_to_track(item, track.requester)
-            if not candidate:
-                continue
-            try:
-                info = extract_sync(candidate.page_url, playlist=False)
-                if info.get('url'):
-                    return info
-            except Exception:
-                continue
-    raise ValueError('No playable audio from source; may be restricted or blocked.')
-
-
-# Spotify links: metadata-only, official authenticated API; no Spotify streaming.
-def spotify_access_token() -> str:
-    if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
-        raise ValueError('Spotify API: SPOTIFY_CLIENT_ID w SPOTIFY_CLIENT_SECRET khas-hom f Railway Variables.')
-    form = {'grant_type': 'client_credentials'}
-    if SPOTIFY_REFRESH_TOKEN:
-        form = {'grant_type': 'refresh_token', 'refresh_token': SPOTIFY_REFRESH_TOKEN}
-    r = requests.post('https://accounts.spotify.com/api/token',
-                      data=form, auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET), timeout=15)
-    if r.status_code != 200:
-        raise ValueError(f'Spotify authentication failed: HTTP {r.status_code}')
-    return str(r.json()['access_token'])
-
-
-def spotify_api(path: str, token: str, params: dict | None = None) -> dict:
-    r = requests.get('https://api.spotify.com/v1' + path,
-                     headers={'Authorization': 'Bearer ' + token}, params=params, timeout=15)
-    if r.status_code == 403:
-        raise ValueError('Spotify access refuse: playlist mashi dyalk/collaborateur aw API restrictions.')
-    if r.status_code != 200:
-        raise ValueError(f'Spotify API error HTTP {r.status_code}')
-    return r.json()
-
-
-def spotify_metadata_sync(link: str) -> tuple[str, list[str]]:
-    parsed = spotify_type(link)
-    if not parsed:
-        raise ValueError('Lien Spotify track, album ou playlist s7i7 matloub.')
-    kind, sid = parsed
-    if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET) and kind in {'track', 'album'}:
-        # Public oEmbed can show a title only, not give audio or a full album listing.
-        response = requests.get('https://open.spotify.com/oembed', params={'url': link}, timeout=12)
-        if response.status_code != 200:
-            raise ValueError(f'Spotify oEmbed HTTP {response.status_code}')
-        return f'Spotify {kind} (oEmbed)', [str(response.json().get('title', 'Titre non disponible'))[:170]]
-    token = spotify_access_token()
-    result: list[str] = []
-    def fmt(item: dict) -> str | None:
-        if not item or item.get('type') != 'track':
-            return None
-        artists = ', '.join(a.get('name','') for a in item.get('artists', []))
-        return f"{item.get('name','Music')} — {artists}"[:170]
-    if kind == 'track':
-        item = spotify_api(f'/tracks/{sid}', token)
-        return 'Spotify track', [fmt(item) or 'Track']
-    if kind == 'album':
-        item = spotify_api(f'/albums/{sid}', token)
-        page = spotify_api(f'/albums/{sid}/tracks', token, {'limit': 50})
-        for t in page.get('items', [])[:MAX_PLAYLIST_IMPORT]:
-            name = fmt(t)
-            if name: result.append(name)
-        return str(item.get('name') or 'Spotify album'), result
-    # In the current Spotify API, playlist-item retrieval may require owner or collaborator authorization.
-    if not SPOTIFY_REFRESH_TOKEN:
-        raise ValueError('Playlist Spotify: user OAuth w SPOTIFY_REFRESH_TOKEN khas-hom; accès owner/collab seulement.')
-    playlist = spotify_api(f'/playlists/{sid}', token)
-    page = spotify_api(f'/playlists/{sid}/items', token, {'limit': min(50, MAX_PLAYLIST_IMPORT)})
-    for row in page.get('items', []):
-        name = fmt(row.get('item') or row.get('track') or {})
-        if name: result.append(name)
-    return str(playlist.get('name') or 'Spotify playlist'), result
-
-
-# ----- V6: Pass site-provided stream headers to FFmpeg, and diagnose silent sources. -----
-def ffmpeg_input_args(info: dict) -> list[str]:
-    """Build safe FFmpeg input flags from yt-dlp's stream metadata.
-
-    FFmpeg is launched with an argument list (never a shell). HTTP header values
-    are not printed, to avoid leaking expiring URLs or credentials into logs.
-    """
-    args = [
-        '-nostdin', '-reconnect', '1', '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5', '-rw_timeout', '20000000',
-    ]
-    headers = info.get('http_headers') or {}
-    if not isinstance(headers, dict):
-        return args
-    supported = {'user-agent', 'referer', 'origin', 'accept', 'accept-language',
-                 'authorization', 'cookie'}
-    lines = []
-    for key, value in headers.items():
-        if not isinstance(key, str) or key.lower() not in supported:
-            continue
-        if not isinstance(value, str) or not value or len(value) > 4096:
-            continue
-        if '\r' in key or '\n' in key or '\r' in value or '\n' in value:
-            continue
-        lines.append(f'{key}: {value}\r\n')
-    if lines:
-        args.extend(['-headers', ''.join(lines)])
-    return args
-
-
-def ffmpeg_before_options(info: dict) -> str:
-    # discord.py's FFmpegPCMAudio splits this string using shlex.split.
-    return ' '.join(shlex.quote(x) for x in ffmpeg_input_args(info))
-
-
-def ffmpeg_problem(stderr_text: str, code: int = 0) -> str:
-    """Classify FFmpeg errors without sending private media URLs to Discord/logs."""
-    val = stderr_text.lower()
-    if '403' in val or 'forbidden' in val:
-        return 'HTTP 403: source katrefed le serveur (possible restriction).'
-    if '401' in val or 'unauthorized' in val:
-        return 'HTTP 401: source kat7taj accès autorisé.'
-    if '429' in val or 'too many requests' in val:
-        return 'HTTP 429: source 7eddat demandes.'
-    if '404' in val or 'not found' in val:
-        return 'HTTP 404: lien audio expiré ou indisponible.'
-    if 'timed out' in val or 'timeout' in val:
-        return 'Timeout: source ma jawbatch l FFmpeg.'
-    if 'invalid data' in val or 'invalid argument' in val:
-        return 'Format non lisible par FFmpeg.'
-    if 'could not resolve' in val or 'name or service not known' in val:
-        return 'DNS: source ma t7ellatch men serveur.'
-    if 'ssl' in val or 'tls' in val or 'certificate' in val:
-        return 'HTTPS/TLS: connexion m3a source fchlat.'
-    if code:
-        return f'FFmpeg exit code {code}; check source availability.'
-    return 'FFmpeg ma sft ta PCM: 7taj diagnostic dyal source.'
-
-
-def probe_stream_sync(info: dict) -> tuple[bool, str]:
-    """Try to decode up to two seconds; checks remote media access, not Discord."""
-    stream_url = info.get('url')
-    if not isinstance(stream_url, str) or not stream_url.startswith(('https://', 'http://')):
-        return False, 'Source ma 3tat ta URL HTTP compatible.'
-    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error',
-           *ffmpeg_input_args(info), '-i', stream_url,
-           '-t', '2', '-vn', '-f', 's16le', '-ac', '2', '-ar', '48000', 'pipe:1']
-    try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=35, check=False)
-    except subprocess.TimeoutExpired:
-        return False, 'FFmpeg timeout: source ma jawbatch.'
-    except (OSError, ValueError) as exc:
-        return False, f'FFmpeg start failed: {type(exc).__name__}'
-    decoded = len(proc.stdout)
-    if decoded >= 48000 * 2 * 2 // 2:
-        return True, f'FFmpeg decoded {decoded // 192000:.1f}s PCM (access OK).'
-    error_text = proc.stderr.decode('utf-8', 'replace')
-    return False, f'FFmpeg produced {decoded} bytes PCM. {ffmpeg_problem(error_text, proc.returncode)}'
-
-
-def playable_audio_sync(track: Track) -> tuple[dict, str]:
-    """Preflight audio on the hosting machine before telling Discord 'now playing'.
-
-    When a selected media format fails, try up to two alternate public audio
-    formats from the same extraction result. Does not defeat access restrictions.
-    """
-    info = resolve_audio_sync(track)
-    ok, message = probe_stream_sync(info)
-    if ok:
-        return info, message
-
-    # FFmpeg can be denied a specific format even when another legitimate
-    # format of the same publicly accessible item is available.
-    formats = info.get('formats') or []
-    if not isinstance(formats, list):
-        formats = []
-    seen = {str(info.get('url') or '')}
-    options = []
-    for fmt in formats:
-        if not isinstance(fmt, dict):
-            continue
-        url = fmt.get('url')
-        if not isinstance(url, str) or not url.startswith('https://') or url in seen:
-            continue
-        if fmt.get('acodec') in (None, 'none'):
-            continue
-        seen.add(url)
-        # Prefer audio-only variants when possible, without requiring a single codec.
-        score = (fmt.get('vcodec') not in (None, 'none'), fmt.get('ext') not in ('m4a', 'mp3', 'webm'))
-        options.append((score, fmt))
-    options.sort(key=lambda item: item[0])
-    for _, fmt in options[:2]:
-        alt = dict(info)
-        alt.update(fmt)
-        alt['http_headers'] = fmt.get('http_headers') or info.get('http_headers') or {}
-        alt_ok, alt_message = probe_stream_sync(alt)
-        if alt_ok:
-            log.info('An alternate media format is playable for guild music source.')
-            return alt, alt_message
-        message = alt_message
-    return {}, message
-
-
-class MonitoredFFmpegAudio(discord.FFmpegPCMAudio):
-    """Track decoded PCM bytes, so Now Playing cannot mask FFmpeg failures."""
-    def __init__(self, *args, **kwargs):
-        self.pcm_bytes = 0
-        super().__init__(*args, **kwargs)
-
-    def read(self) -> bytes:
-        data = super().read()
-        self.pcm_bytes += len(data)
-        return data
-
-
-async def ensure_voice(interaction: discord.Interaction) -> Optional[MusicState]:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message('⛔ Had lcommande katkhdem ghir f server.', ephemeral=True)
-        return None
-    ch = interaction.user.voice.channel if interaction.user.voice else None
-    if ch is None:
-        await interaction.response.send_message('🔊 Dkhol l chi salon vocal louwel!', ephemeral=True)
-        return None
-    st = state_for(interaction.guild.id)
-    try:
-        if interaction.guild.voice_client:
-            st.voice = interaction.guild.voice_client
-            if st.voice.channel != ch:
-                # Prevent remote control from a different voice channel.
-                await interaction.response.send_message('⛔ Khassk tkoun f nafs salon vocal m3a bot.', ephemeral=True)
-                return None
-        else:
-            st.voice = await ch.connect(timeout=25, reconnect=True)
-    except (discord.DiscordException, asyncio.TimeoutError) as exc:
-        log.warning('Voice join failed: %s', exc)
-        await interaction.response.send_message('❌ Ma9drtch ndkhol vocal. Chof Connect/Speak permissions.', ephemeral=True)
-        return None
-    st.channel = interaction.channel
-    return st
-
-async def member_state(interaction: discord.Interaction) -> Optional[MusicState]:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message('⛔ Had lcommande ghir f server.', ephemeral=True)
-        return None
-    st = state_for(interaction.guild.id)
-    voice = interaction.guild.voice_client
-    if not voice or not interaction.user.voice or interaction.user.voice.channel != voice.channel:
-        await interaction.response.send_message('🔊 Khassk tkoun f nafs vocal m3a TOV4R.', ephemeral=True)
-        return None
-    st.voice = voice
-    return st
-
-async def idle_disconnect(guild_id: int):
-    try:
-        await asyncio.sleep(180)
-        st = state_for(guild_id)
-        if not st.current and not st.queue and st.voice and st.voice.is_connected():
-            await st.voice.disconnect()
-            st.voice = None
-    except asyncio.CancelledError:
-        return
-
-async def advance(guild_id: int):
-    st = state_for(guild_id)
-    async with st.lock:
-        if st.idle_task:
-            st.idle_task.cancel()
-            st.idle_task = None
-        if st.loop and st.current and not st.skip_requested:
-            next_track = st.current
-        elif st.queue:
-            next_track = st.queue.popleft()
-        else:
-            st.current = None
-            if st.voice and st.voice.is_connected():
-                st.idle_task = asyncio.create_task(idle_disconnect(guild_id))
-            return
-        st.skip_requested = False
-        st.current = next_track
-        if not st.voice or not st.voice.is_connected():
-            st.current = None
-            st.queue.clear()
-            return
-        try:
-            # Refresh stream URLs at actual playback time to avoid expired URLs.
-            info, diagnostic = await asyncio.to_thread(playable_audio_sync, next_track)
-            if not info:
-                # A playback error is not the same thing as a song not existing.
-                raise ValueError(diagnostic)
-            stream_url = info.get('url')
-            if not stream_url:
-                raise ValueError('Source audio indisponible')
-            # FFmpeg needs the same request headers yt-dlp used to resolve the stream.
-            # Capture errors privately: FFmpeg diagnostics may otherwise include signed URLs.
-            ffmpeg_stderr = tempfile.TemporaryFile(mode='w+b')
-            try:
-                monitored_audio = MonitoredFFmpegAudio(
-                    stream_url, executable=FFMPEG,
-                    before_options=ffmpeg_before_options(info),
-                    options='-vn -loglevel error',
-                    stderr=ffmpeg_stderr,
-                )
-            except Exception:
-                ffmpeg_stderr.close()
-                raise
-            audio = discord.PCMVolumeTransformer(monitored_audio, volume=st.volume)
-            loop = asyncio.get_running_loop()
-            def after_play(error):
-                # The audio player calls this once the FFmpeg source has stopped.
-                try:
-                    ffmpeg_stderr.seek(0)
-                    stderr_text = ffmpeg_stderr.read(16000).decode('utf-8', 'replace')
-                except (OSError, ValueError):
-                    stderr_text = ''
-                finally:
-                    ffmpeg_stderr.close()
-                pcm_seconds = monitored_audio.pcm_bytes / 192000
-                if error or monitored_audio.pcm_bytes < 96000:
-                    reason = ffmpeg_problem(stderr_text, 0)
-                    log.warning('STREAM FAILED: guild=%s pcm=%.2fs reason=%s player_error=%s',
-                                guild_id, pcm_seconds, reason, type(error).__name__ if error else 'none')
-                    if st.channel:
-                        asyncio.run_coroutine_threadsafe(st.channel.send(
-                            embed=embed('STREAM AUDIO MA KHEDMATCH',
-                                '❌ yt-dlp l9a lghnya, walakin FFmpeg ma 9rach son.\n'
-                                f'**Diagnostic:** {reason}\n'
-                                'Jarrab `/testlink` b nafs lien, ou `/testffmpeg`.'),
-                        ), loop)
-                else:
-                    log.info('STREAM FINISHED: guild=%s title=%r decoded=%.1fs',
-                             guild_id, next_track.title[:80], pcm_seconds)
-                asyncio.run_coroutine_threadsafe(advance(guild_id), loop)
-            st.voice.play(audio, after=after_play)
-            if st.channel:
-                try:
-                    e = embed('DABA KATTSMA3', f'**[{next_track.title}]({next_track.page_url})**\n⏱️ `{duration(next_track.duration)}` • 🎤 `{next_track.requester}`')
-                    if next_track.thumbnail and safe_url(next_track.thumbnail):
-                        e.set_thumbnail(url=next_track.thumbnail)
-                    await st.channel.send(embed=e, view=Controls())
-                except discord.HTTPException:
-                    pass
-        except Exception as exc:
-            log.warning('Cannot play %s: %s', next_track.title, exc)
-            st.current = None
-            if st.channel:
-                try:
-                    # A short, sanitized diagnosis is much more useful than 'not found'.
-                    reason = str(exc)
-                    if 'http' in reason.lower() and '://' in reason:
-                        reason = 'Lien non disponible pour le serveur.'
-                    await st.channel.send(embed=embed('SOURCE MA KHEDMATCH',
-                        '❌ Had source ma qdrach yqraha serveur.\n'
-                        f'**Cause:** {reason[:160]}\n'
-                        '⚠️ HTTP 403 kay3ni source rafdat l acces; ma kaynch fix garanti.\n'
-                        'Ghadi njarrbo li mn b3dha.'))
-                except discord.HTTPException:
-                    pass
-            asyncio.get_running_loop().call_soon(lambda: asyncio.create_task(advance(guild_id)))
-
-async def do_pause(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    if st.voice and st.voice.is_playing():
-        st.voice.pause()
-        await interaction.response.send_message(embed=embed('SKOT', '⏸️ W9eft lmusic chwya.'))
-    else:
-        await interaction.response.send_message('Ma kayn ta music khddama daba.', ephemeral=True)
-
-async def do_resume(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    if st.voice and st.voice.is_paused():
-        st.voice.resume()
-        await interaction.response.send_message(embed=embed('KML', '▶️ Rj3na lmusic!'))
-    else:
-        await interaction.response.send_message('Ma kaynach music mpaused.', ephemeral=True)
-
-async def do_skip(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    if st.voice and (st.voice.is_playing() or st.voice.is_paused()):
-        st.skip_requested = True
-        st.voice.stop()
-        await interaction.response.send_message(embed=embed('NEXT', '⏭️ Dzna lghnya!'))
-    else:
-        await interaction.response.send_message('Ma kayn walo bach tskipih.', ephemeral=True)
-
-class Controls(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label='Pause', emoji='⏸️', style=discord.ButtonStyle.secondary, custom_id='tov4r:pause')
-    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await do_pause(interaction)
-
-    @discord.ui.button(label='Resume', emoji='▶️', style=discord.ButtonStyle.success, custom_id='tov4r:resume')
-    async def resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await do_resume(interaction)
-
-    @discord.ui.button(label='Next', emoji='⏭️', style=discord.ButtonStyle.primary, custom_id='tov4r:skip')
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await do_skip(interaction)
-
-    @discord.ui.button(label='Queue', emoji='📜', style=discord.ButtonStyle.secondary, custom_id='tov4r:queue')
-    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild:
-            await interaction.response.send_message('Server only', ephemeral=True)
-            return
-        await interaction.response.send_message(embed=queue_embed(state_for(interaction.guild.id)), ephemeral=True)
-
-class Tov4rBot(commands.Bot):
+class Community(commands.Bot):
+    def __init__(self, store=None):
+        intents=discord.Intents.default(); intents.members=True; intents.message_content=True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents,
+                         allowed_mentions=discord.AllowedMentions.none())
+        self.store=store or Store(os.getenv('DATABASE_PATH','data/community.db'))
+        self.locks=collections.defaultdict(asyncio.Lock)
+        self.spam=collections.defaultdict(collections.deque)
+        self.web_runner=None
     async def setup_hook(self):
-        from server_setup import register_server_commands
-        register_server_commands(self)
-        self.add_view(Controls())
-        # IMPORTANT: Always publish the global command tree.
-        # Previously, setting GUILD_ID meant that only one server received commands.
-        global_commands = await self.tree.sync()
-        log.info('GLOBAL SYNC OK: %d slash commands available for installed servers.', len(global_commands))
-        # Optional quick-sync for the original testing server; it does NOT replace global sync.
-        if GUILD_ID:
-            if not GUILD_ID.isdecimal():
-                log.warning('GUILD_ID must be numeric or empty. Ignoring: %r', GUILD_ID)
+        expected=os.getenv('DISCORD_APPLICATION_ID','').strip()
+        if expected and self.application_id != int(expected):
+            raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
+        log.info('Authenticated application ID: %s',self.application_id)
+        await self.add_cog(Features(self))
+        self.add_view(VoicePanel(self)); self.add_view(TicketPanel(self)); self.add_view(CloseTicket(self))
+        for r in self.store.all("SELECT * FROM giveaways WHERE state IN ('open','drawn')"):
+            self.add_view(GiveawayPanel(self,r['message']),message_id=r['message'])
+        for r in self.store.all('SELECT * FROM role_panels'):
+            self.add_view(RolePanel(self,json.loads(r['roles'])),message_id=r['message'])
+        await self.sync_public_commands()
+        from dashboard import start_dashboard
+        self.web_runner=await start_dashboard(self)
+        self.maintenance.start()
+    async def sync_public_commands(self):
+        # Global commands remain available to every server that installs this app.
+        await self.tree.sync()
+        # Remove legacy guild copies created by version 1, avoiding stale overrides.
+        legacy=os.getenv('DISCORD_GUILD_ID','').strip()
+        if legacy:
+            target=discord.Object(id=int(legacy))
+            self.tree.clear_commands(guild=target)
+            await self.tree.sync(guild=target)
+    def invite_url(self):
+        permissions=discord.Permissions(view_channel=True,send_messages=True,embed_links=True,
+            attach_files=True,read_message_history=True,manage_channels=True,manage_roles=True,
+            manage_messages=True,connect=True,move_members=True,kick_members=True,
+            ban_members=True,moderate_members=True)
+        return discord.utils.oauth_url(self.application_id,permissions=permissions,
+                                       scopes=('bot','applications.commands'))
+    async def close(self):
+        self.maintenance.cancel()
+        if self.web_runner: await self.web_runner.cleanup()
+        await super().close()
+        self.store.db.close()
+    async def on_ready(self):
+        log.info('Connected as %s, %s servers',self.user,len(self.guilds))
+        await self.change_presence(activity=discord.Game('/help • Tov4r Bot'))
+    async def audit(self,guild,kind,detail):
+        self.store.event(guild.id,kind,detail)
+        c=guild.get_channel(self.store.config(guild.id)['logs_channel'])
+        if isinstance(c,discord.TextChannel):
+            try: await c.send(embed=embed(kind,detail[:3900]))
+            except discord.HTTPException: log.warning('Cannot send log to guild %s',guild.id)
+    async def on_member_join(self,member):
+        cfg=self.store.config(member.guild.id)
+        role=member.guild.get_role(cfg['autorole'])
+        if role and safe_role(role,member.guild):
+            try: await member.add_roles(role,reason='TOV4R Auto-role')
+            except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
+        c=member.guild.get_channel(cfg['welcome_channel'])
+        if isinstance(c,discord.TextChannel):
+            image=Image.new('RGB',(1000,340),'#101117'); d=ImageDraw.Draw(image)
+            d.rounded_rectangle((22,22,978,318),radius=28,fill='#1a1b25',outline='#ef3340',width=3)
+            def font(size):
+                for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf','C:/Windows/Fonts/arialbd.ttf'):
+                    if Path(p).exists(): return ImageFont.truetype(p,size)
+                return ImageFont.load_default(size=size)
+            d.text((60,55),'TOV4R / COMMUNITY',fill='#ef3340',font=font(25))
+            d.text((60,116),'MER7BA BIK!',fill='white',font=font(52))
+            # Avoid font failures on arbitrary display names by leaving them in the embed.
+            d.text((60,220),f'MEMBER #{member.guild.member_count}',fill='#aaaabc',font=font(24))
+            data=io.BytesIO(); image.save(data,format='PNG'); data.seek(0)
+            text=cfg['welcome_text'].replace('{mention}',member.mention).replace('{server}',member.guild.name).replace('{name}',member.display_name)
+            e=embed('Mer7ba '+member.display_name,text); e.set_image(url='attachment://welcome.png')
+            try: await c.send(embed=e,file=discord.File(data,filename='welcome.png'))
+            except discord.HTTPException: log.exception('Welcome failed')
+        await self.audit(member.guild,'Member joined',f'{member} • {member.id}')
+    async def on_member_remove(self,member):
+        await self.audit(member.guild,'Member left',f'{member} • {member.id}')
+        c=member.guild.get_channel(self.store.config(member.guild.id)['welcome_channel'])
+        if isinstance(c,discord.TextChannel):
+            try: await c.send(embed=embed('Bslama 👋',f'{member.display_name} khrej mn server.'))
+            except discord.HTTPException: pass
+    async def on_message(self,message):
+        if not message.guild or message.author.bot or not isinstance(message.author,discord.Member): return
+        cfg=self.store.config(message.guild.id)
+        if not message.author.guild_permissions.manage_messages:
+            reason=None
+            words=[w.strip().casefold() for w in cfg['blocked_words'].split(',') if w.strip()]
+            if any(w in message.content.casefold() for w in words): reason='Blocked word'
+            if cfg['anti_invites'] and re.search(r'(discord\.gg/|discord(?:app)?\.com/invite/)',message.content,re.I): reason='Discord invite'
+            if cfg['antispam']:
+                key=(message.guild.id,message.author.id); q=self.spam[key]; now=time.monotonic()
+                q.append(now)
+                while q and now-q[0]>7: q.popleft()
+                if len(q)>=6: reason='Spam: 6 messages / 7 seconds'
+            if reason:
+                try: await message.delete()
+                except discord.HTTPException: pass
+                if reason.startswith('Spam') and message.author.top_role < message.guild.me.top_role and message.author.id != message.guild.owner_id:
+                    try: await message.author.timeout(timedelta(minutes=1),reason=reason)
+                    except discord.HTTPException: pass
+                await self.audit(message.guild,'AutoMod',f'{message.author.id}: {reason}')
+                return
+        if cfg['levels']:
+            up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
+            if up is not None:
+                try: await message.channel.send(embed=embed('Level up!',f'{message.author.mention} wsel level **{up}** 🎉'))
+                except discord.HTTPException: pass
+    async def on_message_delete(self,message):
+        if message.guild and not message.author.bot:
+            await self.audit(message.guild,'Message deleted',f'User {message.author.id} • Channel {message.channel.id}\n{message.content[:1500]}')
+    async def on_message_edit(self,before,after):
+        if after.guild and not after.author.bot and before.content != after.content:
+            await self.audit(after.guild,'Message edited',f'User {after.author.id}\nBefore: {before.content[:700]}\nAfter: {after.content[:700]}')
+    async def on_guild_channel_delete(self,channel):
+        self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
+        self.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(channel.id,))
+    async def on_voice_state_update(self,member,before,after):
+        if member.bot or before.channel == after.channel: return
+        cfg=self.store.config(member.guild.id)
+        if after.channel and after.channel.id==cfg['voice_creator']:
+            async with self.locks[('voice',member.id)]:
+                if not member.voice or member.voice.channel.id!=cfg['voice_creator']: return
+                existing=self.store.one('SELECT channel FROM rooms WHERE guild=? AND owner=?',(member.guild.id,member.id))
+                old=member.guild.get_channel(existing['channel']) if existing else None
+                if old:
+                    try: await member.move_to(old)
+                    except discord.HTTPException: pass
+                else:
+                    cat=member.guild.get_channel(cfg['voice_category'])
+                    if not isinstance(cat,discord.CategoryChannel): return
+                    overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=True,connect=True),
+                                member.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,manage_channels=True,move_members=True),
+                                member:discord.PermissionOverwrite(view_channel=True,connect=True)}
+                    channel=None
+                    try:
+                        channel=await member.guild.create_voice_channel(f'🔊 {member.display_name}'[:100],category=cat,overwrites=overwrites,reason='TOV4R Join to Create')
+                        self.store.run('INSERT INTO rooms VALUES(?,?,?)',(channel.id,member.guild.id,member.id))
+                        await member.move_to(channel)
+                        await self.audit(member.guild,'Voice created',f'{channel.name} • Owner {member.id}')
+                    except discord.HTTPException:
+                        log.exception('Voice creation failed')
+                        if channel and not channel.members:
+                            try: await channel.delete()
+                            except discord.HTTPException: pass
+        if before.channel:
+            await self.clean_room(before.channel)
+    async def clean_room(self,channel):
+        async with self.locks[('room',channel.id)]:
+            r=self.store.one('SELECT * FROM rooms WHERE channel=?',(channel.id,))
+            if r and not channel.members:
+                try: await channel.delete(reason='TOV4R empty temporary room')
+                except discord.NotFound: pass
+                except discord.HTTPException: return
+                self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
+    @tasks.loop(seconds=15)
+    async def maintenance(self):
+        for r in self.store.all('SELECT * FROM rooms'):
+            g=self.get_guild(r['guild'])
+            if not g or g.unavailable: continue
+            c=g.get_channel(r['channel'])
+            if c: await self.clean_room(c)
+            else: self.store.run('DELETE FROM rooms WHERE channel=?',(r['channel'],))
+        for r in self.store.all("SELECT * FROM giveaways WHERE state='drawn' OR (state='open' AND ends<=?)",(time.time(),)):
+            try: await self.finish_giveaway(r['message'])
+            except discord.HTTPException: log.warning('Giveaway delivery deferred %s',r['message'])
+        now=time.monotonic()
+        for key in list(self.spam):
+            if not self.spam[key] or now-self.spam[key][-1]>60: del self.spam[key]
+    @maintenance.before_loop
+    async def before_maintenance(self): await self.wait_until_ready()
+    async def finish_giveaway(self,mid,reroll=False):
+        async with self.locks[('giveaway',mid)]:
+            r=self.store.one('SELECT * FROM giveaways WHERE message=?',(mid,))
+            if not r: raise ValueError('Giveaway not found')
+            if r['state']=='done' and not reroll: return
+            g=self.get_guild(r['guild']); c=g.get_channel(r['channel']) if g else None
+            if not c: return
+            if r['state']=='open' or reroll:
+                ids=[e['user'] for e in self.store.all('SELECT user FROM entries WHERE message=?',(mid,)) if g.get_member(e['user'])]
+                winners=secrets.SystemRandom().sample(ids,min(len(ids),r['count']))
+                self.store.run("UPDATE giveaways SET state='drawn',winners=? WHERE message=?",(json.dumps(winners),mid))
+            else: winners=json.loads(r['winners'])
+            text=', '.join(f'<@{u}>' for u in winners) or 'No eligible participants.'
+            try:
+                message=await c.fetch_message(mid)
+                await message.edit(embed=embed('Giveaway ended • '+r['prize'],f'Winners: {text}'),view=None)
+            except discord.NotFound:
+                self.store.run("UPDATE giveaways SET state='done' WHERE message=?",(mid,)); return
+            self.store.run("UPDATE giveaways SET state='done' WHERE message=?",(mid,))
+            await self.audit(g,'Giveaway ended',f'{r["prize"]} • {text}')
+
+class ErrorView(discord.ui.View):
+    async def on_error(self,i,error,item):
+        log.error('Component error',exc_info=error)
+        await reply(i,'Ma9dertch nkml. Check permissions / role hierarchy, w 3awed.')
+
+async def owned_room(bot,i):
+    c=i.user.voice.channel if isinstance(i.user,discord.Member) and i.user.voice else None
+    r=bot.store.one('SELECT * FROM rooms WHERE channel=?',(c.id,)) if c else None
+    if not r or r['owner']!=i.user.id: raise ValueError('Khassek tkon f room dyalek.')
+    return c,r
+
+class RoomModal(discord.ui.Modal):
+    def __init__(self,bot,action):
+        super().__init__(title='TOV4R • '+action)
+        self.bot=bot; self.action=action
+        self.value=discord.ui.TextInput(label='New name' if action=='rename' else 'Member limit (0–99)',max_length=80 if action=='rename' else 2)
+        self.add_item(self.value)
+    async def on_submit(self,i):
+        try:
+            c,_=await owned_room(self.bot,i)
+            await i.response.defer(ephemeral=True)
+            if self.action=='rename': await c.edit(name=str(self.value).strip() or 'TOV4R Room')
             else:
+                n=int(str(self.value))
+                if not 0<=n<=99: raise ValueError('Limit: 0–99')
+                await c.edit(user_limit=n)
+            await reply(i,'Tbedlat ✅')
+        except ValueError as e: await reply(i,str(e))
+        except discord.HTTPException: await reply(i,'Check permissions; Discord y9der ylimit rename temporarily.')
+
+class RoomUserSelect(discord.ui.UserSelect):
+    def __init__(self,bot,action):
+        super().__init__(placeholder='Choose a member',min_values=1,max_values=1)
+        self.bot=bot; self.action=action
+    async def callback(self,i):
+        try:
+            c,r=await owned_room(self.bot,i)
+            target=i.guild.get_member(self.values[0].id)
+            if not target or target.bot or target.id==i.user.id: raise ValueError('Choose another human member.')
+            await i.response.defer(ephemeral=True)
+            if self.action=='transfer':
+                if not target.voice or target.voice.channel!=c: raise ValueError('Member khas ykon f room.')
+                duplicate=self.bot.store.one('SELECT channel FROM rooms WHERE guild=? AND owner=?',(i.guild.id,target.id))
+                if duplicate: raise ValueError('Had member 3ndo deja room.')
+                await c.set_permissions(i.user,overwrite=None)
+                await c.set_permissions(target,view_channel=True,connect=True)
+                self.bot.store.run('UPDATE rooms SET owner=? WHERE channel=?',(target.id,c.id))
+            elif self.action=='permit': await c.set_permissions(target,view_channel=True,connect=True)
+            else:
+                if target.guild_permissions.administrator: raise ValueError('Ma t9derch tblocki admin.')
+                await c.set_permissions(target,connect=False)
+                if target.voice and target.voice.channel==c: await target.move_to(None)
+            await reply(i,'Tgad ✅')
+        except ValueError as e: await reply(i,str(e))
+
+class VoicePanel(ErrorView):
+    def __init__(self,bot):
+        super().__init__(timeout=None); self.bot=bot
+        for action,label in [('lock','🔒 Lock'),('unlock','🔓 Unlock'),('hide','👻 Hide'),('show','👁 Show'),('rename','✏ Rename'),('limit','👥 Limit'),('permit','✅ Permit'),('kick','⛔ Kick / block'),('transfer','👑 Transfer'),('claim','🙋 Claim')]:
+            b=discord.ui.Button(label=label,custom_id='voice:'+action,style=discord.ButtonStyle.secondary)
+            async def action_handler(i,a=action):
                 try:
-                    test_guild = discord.Object(id=int(GUILD_ID))
-                    self.tree.copy_global_to(guild=test_guild)
-                    test_commands = await self.tree.sync(guild=test_guild)
-                    log.info('TEST GUILD SYNC OK: %d commands in %s.', len(test_commands), GUILD_ID)
-                except discord.DiscordException as error:
-                    log.warning('Test server sync failed (global sync still active): %s', error)
+                    if a=='claim':
+                        c=i.user.voice.channel if i.user.voice else None
+                        r=bot.store.one('SELECT * FROM rooms WHERE channel=?',(c.id,)) if c else None
+                        if not r or any(m.id==r['owner'] for m in c.members): raise ValueError('Owner mazal f room, ola hadi machi temp room.')
+                        if bot.store.one('SELECT channel FROM rooms WHERE guild=? AND owner=?',(i.guild.id,i.user.id)): raise ValueError('3ndek deja room.')
+                        await i.response.defer(ephemeral=True)
+                        old=i.guild.get_member(r['owner'])
+                        if old: await c.set_permissions(old,overwrite=None)
+                        await c.set_permissions(i.user,view_channel=True,connect=True)
+                        bot.store.run('UPDATE rooms SET owner=? WHERE channel=?',(i.user.id,c.id))
+                        await reply(i,'Daba nta owner ✅'); return
+                    c,_=await owned_room(bot,i)
+                    if a in ('rename','limit'): await i.response.send_modal(RoomModal(bot,a)); return
+                    if a in ('permit','kick','transfer'):
+                        v=ErrorView(timeout=90); v.add_item(RoomUserSelect(bot,a))
+                        await i.response.send_message('Choose member:',view=v,ephemeral=True); return
+                    await i.response.defer(ephemeral=True)
+                    ow=c.overwrites_for(i.guild.default_role)
+                    if a in ('lock','unlock'): ow.connect=a=='unlock'
+                    else: ow.view_channel=a=='show'
+                    await c.set_permissions(i.guild.default_role,overwrite=ow)
+                    await reply(i,'Tgad ✅ Explicitly permitted members can still join locked rooms.')
+                except ValueError as e: await reply(i,str(e))
+            async def callback(i,handler=action_handler):
+                channel=i.user.voice.channel if isinstance(i.user,discord.Member) and i.user.voice else None
+                async with bot.locks[('room',channel.id if channel else i.user.id)]:
+                    await handler(i)
+            b.callback=callback; self.add_item(b)
 
-intents = discord.Intents.default()
-intents.voice_states = True
-bot = Tov4rBot(command_prefix='!', intents=intents, help_command=None)
+class TicketPanel(ErrorView):
+    def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
+    @discord.ui.button(label='🎫 Open ticket',custom_id='ticket:open',style=discord.ButtonStyle.danger)
+    async def open_ticket(self,i,button):
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('ticket',i.guild_id,i.user.id)]:
+            cfg=self.bot.store.config(i.guild_id)
+            existing=self.bot.store.one('SELECT * FROM tickets WHERE guild=? AND owner=? AND closed=0',(i.guild_id,i.user.id))
+            if existing and i.guild.get_channel(existing['channel']): return await reply(i,f'Ticket dyalek: <#{existing["channel"]}>')
+            if existing: self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(existing['channel'],))
+            cat=i.guild.get_channel(cfg['ticket_category']); role=i.guild.get_role(cfg['support_role'])
+            if not isinstance(cat,discord.CategoryChannel) or not role: return await reply(i,'Admin khas ydir /setup lwel.')
+            overwrites={i.guild.default_role:discord.PermissionOverwrite(view_channel=False),
+                        i.guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,manage_channels=True),
+                        i.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,attach_files=True),
+                        role:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)}
+            c=await i.guild.create_text_channel(f'ticket-{i.user.id}',category=cat,overwrites=overwrites)
+            self.bot.store.run('INSERT INTO tickets(channel,guild,owner) VALUES(?,?,?)',(c.id,i.guild_id,i.user.id))
+            await c.send(embed=embed('Support • TOV4R',f'{i.user.mention}, kteb lmochkil dyalek hna.\nClose kayarchive ticket w kay7yed access dyalek.'),view=CloseTicket(self.bot))
+            await reply(i,f'Ticket wajd: {c.mention}')
+            await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {i.user.id}')
 
-@bot.event
-async def on_ready():
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name='/sma3 • TOV4R MUSIC'))
-    log.info('Online as %s', bot.user)
-    log.info('SERVERS CONNECTED: %d | IDs: %s', len(bot.guilds), ', '.join(str(g.id) for g in bot.guilds) or '(none)')
+class CloseTicket(ErrorView):
+    def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
+    @discord.ui.button(label='🔒 Close & archive',custom_id='ticket:close',style=discord.ButtonStyle.secondary)
+    async def close_ticket(self,i,button):
+        async with self.bot.locks[('close',i.channel_id)]:
+            r=self.bot.store.one('SELECT * FROM tickets WHERE channel=? AND closed=0',(i.channel_id,))
+            if not r: return await reply(i,'Ticket deja msdod.')
+            if i.user.id!=r['owner'] and not is_staff(i.user,self.bot.store.config(i.guild_id)): return await reply(i,'Ma3ndekch permission.')
+            await i.response.defer(ephemeral=True)
+            # Archive permissions first; never delete user messages.
+            owner=i.guild.get_member(r['owner'])
+            overwrites={target:ow for target,ow in i.channel.overwrites.items() if target.id!=r['owner']}
+            if owner: overwrites[owner]=discord.PermissionOverwrite(view_channel=False,send_messages=False)
+            await i.channel.edit(name=f'closed-{r["owner"]}',overwrites=overwrites)
+            self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(i.channel_id,))
+            await i.channel.send(embed=embed('Ticket archived',f'Closed by {i.user.id}. Staff can use /transcript.'))
+            await self.bot.audit(i.guild,'Ticket closed',f'{i.channel_id} • by {i.user.id}')
+            await reply(i,'Ticket tsed ✅')
 
-@bot.event
-async def on_guild_join(guild: discord.Guild):
-    log.info('JOINED NEW SERVER: %s | ID: %s', guild.name, guild.id)
+class GiveawayPanel(ErrorView):
+    def __init__(self,bot,mid):
+        super().__init__(timeout=None); self.bot=bot; self.mid=mid
+        b=discord.ui.Button(label='🎉 Participate / Leave',style=discord.ButtonStyle.danger,custom_id=f'giveaway:{mid}')
+        b.callback=self.toggle; self.add_item(b)
+    async def toggle(self,i):
+        async with self.bot.locks[('giveaway',self.mid)]:
+            r=self.bot.store.one('SELECT * FROM giveaways WHERE message=?',(self.mid,))
+            if not r or r['state']!='open' or r['ends']<=time.time(): return await reply(i,'Giveaway sala.')
+            old=self.bot.store.one('SELECT * FROM entries WHERE message=? AND user=?',(self.mid,i.user.id))
+            if old: self.bot.store.run('DELETE FROM entries WHERE message=? AND user=?',(self.mid,i.user.id))
+            else: self.bot.store.run('INSERT INTO entries VALUES(?,?)',(self.mid,i.user.id))
+            await reply(i,'Khrejti mn giveaway.' if old else 'Dkhelti l giveaway ✅ Good luck!')
 
-@bot.event
-async def on_guild_remove(guild: discord.Guild):
-    log.info('LEFT SERVER: %s | ID: %s', guild.name, guild.id)
+class RolePanel(ErrorView):
+    def __init__(self,bot,roles):
+        super().__init__(timeout=None)
+        for rid,label in roles:
+            b=discord.ui.Button(label=label[:80],custom_id=f'role:{rid}',style=discord.ButtonStyle.secondary)
+            async def callback(i,role_id=rid):
+                r=i.guild.get_role(role_id)
+                if not r or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
+                await i.response.defer(ephemeral=True)
+                if r in i.user.roles: await i.user.remove_roles(r,reason='Self role')
+                else: await i.user.add_roles(r,reason='Self role')
+                await reply(i,'Role updated ✅')
+            b.callback=callback; self.add_item(b)
 
-@bot.tree.command(name='ping', description='✅ TOV4R MUSIC: verifier que le bot repond dans ce serveur')
-async def ping(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message('📍 Khassek tjarreb had commande f chi serveur Discord.', ephemeral=True)
-        return
-    await interaction.response.send_message(
-        f'✅ **TOV4R MUSIC ONLINE** f **{interaction.guild.name}**!\n'
-        f'🎵 `/sma3` — chghl music | 🎛️ `/tov4r` — help\n'
-        f'📡 Ping: {round(bot.latency * 1000)} ms', ephemeral=True)
+class Features(commands.Cog):
+    def __init__(self,bot): self.bot=bot
+    async def interaction_check(self,i):
+        if not i.guild: raise app_commands.NoPrivateMessage()
+        return True
+    async def cog_app_command_error(self,i,error):
+        if isinstance(error,app_commands.CheckFailure): return await reply(i,'Ma3ndekch permission l had command.')
+        original=getattr(error,'original',error)
+        if isinstance(original,ValueError): return await reply(i,str(original))
+        log.error('Command failed',exc_info=error)
+        await reply(i,'Command ma kmelch. Check bot permissions / role hierarchy, w logs dyal application.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Invite Tov4r Bot to another server')
+    async def invite(self,i:discord.Interaction):
+        await i.response.send_message(embed=embed('Invite Tov4r Bot',
+            f'[Add to your server]({self.bot.invite_url()})\nAn admin runs /setup after inviting the bot.'),ephemeral=True)
+    @app_commands.guild_only()
+    @app_commands.command(name='help',description='All Tov4r Bot commands')
+    async def help_command(self,i:discord.Interaction):
+        await i.response.send_message(embed=embed('TOV4R • Command center',
+            '**Members**\n/help · /invite · /rank · /leaderboard · /serverinfo\n'
+            '**Voice**\nJoin ➕ Create your room → use voice-panel buttons.\n'
+            '**Staff**\n/setup · /configure · /panels · /rolepanel · /announce\n'
+            '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
+            '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
+            '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
+    @app_commands.guild_only()
+    @app_commands.command(description='Create or repair TOV4R community channels and panels')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup(self,i:discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('setup',i.guild_id)]:
+            g=i.guild; cfg=self.bot.store.config(g.id)
+            async def category(key,name,private=False):
+                c=g.get_channel(cfg[key])
+                if not isinstance(c,discord.CategoryChannel):
+                    ow={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,manage_channels=True)} if private else {}
+                    c=await g.create_category(name,overwrites=ow)
+                    cfg[key]=c.id; self.bot.store.update(g.id,{key:c.id})
+                return c
+            voice=await category('voice_category','TOV4R • VOICE')
+            await category('ticket_category','TOV4R • SUPPORT',True)
+            role=g.get_role(cfg['support_role'])
+            if not role:
+                role=await g.create_role(name='TOV4R Support',colour=discord.Colour(COLOR),reason='TOV4R setup')
+                cfg['support_role']=role.id; self.bot.store.update(g.id,{'support_role':role.id})
+            if not g.get_channel(cfg['voice_creator']):
+                c=await g.create_voice_channel('➕ Create your room',category=voice)
+                cfg['voice_creator']=c.id; self.bot.store.update(g.id,{'voice_creator':c.id})
+            for key,name in [('welcome_channel','welcome'),('logs_channel','tov4r-logs')]:
+                if not g.get_channel(cfg[key]):
+                    ow={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True),role:discord.PermissionOverwrite(view_channel=True)} if key=='logs_channel' else {g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)}
+                    c=await g.create_text_channel(name,overwrites=ow)
+                    cfg[key]=c.id; self.bot.store.update(g.id,{key:c.id})
+            for name,view,description in [('voice-panel',VoicePanel(self.bot),'Dkhel l **➕ Create your room**, men ba3d control room dyalek hna.'),('tickets',TicketPanel(self.bot),'Support / report / request. Click Open ticket.')]:
+                c=discord.utils.get(g.text_channels,name=name)
+                if not c:
+                    c=await g.create_text_channel(name,overwrites={g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)})
+                    await c.send(embed=embed('TOV4R • '+name,description),view=view)
+            await self.bot.audit(g,'Setup','Community configured by '+str(i.user.id))
+            await reply(i,'Setup wajd ✅ 3ti role TOV4R Support l staff. /configure bach tbedel settings, /panels bach t3awed tsift panel ila tmsa7.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Set channels, support role and optional safe auto-role')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def configure(self,i:discord.Interaction,welcome:discord.TextChannel|None=None,logs:discord.TextChannel|None=None,support:discord.Role|None=None,autorole:discord.Role|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None):
+        changes={}
+        for k,v in [('welcome_channel',welcome),('logs_channel',logs),('support_role',support),('autorole',autorole)]:
+            if v: changes[k]=v.id
+        if autorole and not safe_role(autorole,i.guild): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
+        for k,v in [('levels',levels),('antispam',antispam),('anti_invites',anti_invites)]:
+            if v is not None: changes[k]=v
+        self.bot.store.update(i.guild_id,changes)
+        await reply(i,'Settings saved ✅ Full settings f dashboard.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Send a voice or ticket control panel here')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.choices(kind=[app_commands.Choice(name='Voice',value='voice'),app_commands.Choice(name='Tickets',value='tickets')])
+    async def panels(self,i:discord.Interaction,kind:str):
+        await i.response.defer(ephemeral=True)
+        await i.channel.send(embed=embed('TOV4R • '+kind,'Use the buttons below.'),view=VoicePanel(self.bot) if kind=='voice' else TicketPanel(self.bot))
+        await reply(i,'Panel sent ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Publish a safe self-service role button')
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def rolepanel(self,i:discord.Interaction,role:discord.Role):
+        if not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
+        await i.response.defer(ephemeral=True)
+        roles=[(role.id,role.name)]
+        m=await i.channel.send(embed=embed('Choose your role',f'Click to add / remove **{role.name}**.'),view=RolePanel(self.bot,roles))
+        self.bot.store.run('INSERT INTO role_panels VALUES(?,?,?)',(m.id,i.guild_id,json.dumps(roles)))
+        await reply(i,'Role panel sent ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='See your level and XP')
+    async def rank(self,i:discord.Interaction,member:discord.Member|None=None):
+        m=member or i.user; r=self.bot.store.one('SELECT points FROM xp WHERE guild=? AND user=?',(i.guild_id,m.id))
+        points=r['points'] if r else 0; lv=level(points)
+        await i.response.send_message(embed=embed(m.display_name,f'Level **{lv}** • **{points} XP**\nNext level: {(lv+1)**2*100} XP'))
+    @app_commands.guild_only()
+    @app_commands.command(description='Top 10 community members by XP')
+    async def leaderboard(self,i:discord.Interaction):
+        rows=self.bot.store.all('SELECT user,points FROM xp WHERE guild=? ORDER BY points DESC LIMIT 10',(i.guild_id,))
+        text='\n'.join(f'**{n}.** <@{r["user"]}> — {r["points"]} XP • Lv {level(r["points"])}' for n,r in enumerate(rows,1))
+        await i.response.send_message(embed=embed('Community leaderboard',text or 'Mazal ma kayn XP.'))
+    @app_commands.guild_only()
+    @app_commands.command(description='Real server stats')
+    async def serverinfo(self,i:discord.Interaction):
+        rooms=self.bot.store.one('SELECT COUNT(*) n FROM rooms WHERE guild=?',(i.guild_id,))['n']
+        await i.response.send_message(embed=embed(i.guild.name,f'Members: **{i.guild.member_count}**\nTemporary rooms: **{rooms}**\nChannels: **{len(i.guild.channels)}**'))
+    @app_commands.guild_only()
+    @app_commands.command(description='Send a formatted announcement without mass pings')
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def announce(self,i:discord.Interaction,title:app_commands.Range[str,1,200],text:app_commands.Range[str,1,3500],channel:discord.TextChannel|None=None):
+        await i.response.defer(ephemeral=True)
+        await (channel or i.channel).send(embed=embed(title,text))
+        await reply(i,'Announcement sent ✅')
+    def target(self,i,member):
+        if member.id in (i.user.id,i.guild.owner_id,self.bot.user.id): raise ValueError('Invalid moderation target.')
+        if i.user.id!=i.guild.owner_id and member.top_role>=i.user.top_role: raise ValueError('Member role equal / higher than yours.')
+        if member.top_role>=i.guild.me.top_role: raise ValueError('Move bot role above member role.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Record a warning')
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warn(self,i:discord.Interaction,member:discord.Member,reason:app_commands.Range[str,1,500]):
+        self.target(i,member)
+        self.bot.store.run('INSERT INTO warnings(guild,user,moderator,reason,at) VALUES(?,?,?,?,?)',(i.guild_id,member.id,i.user.id,reason,time.time()))
+        await i.response.defer(ephemeral=True)
+        await self.bot.audit(i.guild,'Warning',f'{member.id} • by {i.user.id}: {reason}')
+        await reply(i,'Warning recorded ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Read the last 15 warnings for a member')
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warnings(self,i:discord.Interaction,member:discord.Member):
+        rows=self.bot.store.all('SELECT * FROM warnings WHERE guild=? AND user=? ORDER BY id DESC LIMIT 15',(i.guild_id,member.id))
+        await reply(i,'\n'.join(f'#{r["id"]}: {r["reason"][:100]}' for r in rows) or 'No warnings.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Timeout a member for 1–40320 minutes')
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def timeout(self,i:discord.Interaction,member:discord.Member,minutes:app_commands.Range[int,1,40320],reason:app_commands.Range[str,1,500]='Moderation'):
+        self.target(i,member); await i.response.defer(ephemeral=True)
+        await member.timeout(timedelta(minutes=minutes),reason=f'{i.user.id}: {reason}')
+        await self.bot.audit(i.guild,'Timeout',f'{member.id} • {minutes} min • {reason}')
+        await reply(i,'Timeout applied ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Remove a timeout')
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def untimeout(self,i:discord.Interaction,member:discord.Member):
+        self.target(i,member); await i.response.defer(ephemeral=True)
+        await member.timeout(None,reason=f'{i.user.id}: remove timeout'); await reply(i,'Timeout removed ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Kick a member')
+    @app_commands.checks.has_permissions(kick_members=True)
+    async def kick(self,i:discord.Interaction,member:discord.Member,reason:app_commands.Range[str,1,500]):
+        self.target(i,member); await i.response.defer(ephemeral=True)
+        await member.kick(reason=f'{i.user.id}: {reason}')
+        await self.bot.audit(i.guild,'Kick',f'{member.id} • {reason}'); await reply(i,'Member kicked.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Ban a member; preserves message history')
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def ban(self,i:discord.Interaction,member:discord.Member,reason:app_commands.Range[str,1,500]):
+        self.target(i,member); await i.response.defer(ephemeral=True)
+        await member.ban(reason=f'{i.user.id}: {reason}',delete_message_seconds=0)
+        await self.bot.audit(i.guild,'Ban',f'{member.id} • {reason}'); await reply(i,'Member banned.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Unban by Discord user ID')
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def unban(self,i:discord.Interaction,user_id:str):
+        if not user_id.isdecimal(): raise ValueError('Valid user ID required.')
+        await i.response.defer(ephemeral=True)
+        await i.guild.unban(discord.Object(id=int(user_id)),reason=f'{i.user.id}: unban')
+        await self.bot.audit(i.guild,'Unban',user_id); await reply(i,'Unbanned ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Remove 1–100 recent messages from this channel')
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def purge(self,i:discord.Interaction,count:app_commands.Range[int,1,100]):
+        await i.response.defer(ephemeral=True)
+        removed=await i.channel.purge(limit=count)
+        await self.bot.audit(i.guild,'Purge',f'{len(removed)} messages • channel {i.channel_id} • by {i.user.id}')
+        await reply(i,f'{len(removed)} messages removed.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Start a timed giveaway with persistent participation buttons')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway(self,i:discord.Interaction,prize:app_commands.Range[str,1,200],minutes:app_commands.Range[int,1,43200],winners:app_commands.Range[int,1,20]=1):
+        await i.response.defer(ephemeral=True); ends=time.time()+minutes*60
+        m=await i.channel.send(embed=embed('🎉 '+prize,f'Ends <t:{int(ends)}:R> • Winners: {winners}\nClick below to participate.'))
+        self.bot.store.run('INSERT INTO giveaways(message,guild,channel,prize,ends,count) VALUES(?,?,?,?,?,?)',(m.id,i.guild_id,i.channel_id,prize,ends,winners))
+        await m.edit(view=GiveawayPanel(self.bot,m.id)); await reply(i,f'Giveaway started ✅ ID: {m.id}')
+    async def get_giveaway(self,i,message_id):
+        if not message_id.isdecimal(): raise ValueError('Message ID required.')
+        r=self.bot.store.one('SELECT * FROM giveaways WHERE message=? AND guild=?',(int(message_id),i.guild_id))
+        if not r: raise ValueError('Giveaway not found in this server.')
+        return r
+    @app_commands.guild_only()
+    @app_commands.command(description='End a giveaway now')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway_end(self,i:discord.Interaction,message_id:str):
+        r=await self.get_giveaway(i,message_id); await i.response.defer(ephemeral=True)
+        await self.bot.finish_giveaway(r['message']); await reply(i,'Giveaway ended ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Draw new winners for a completed giveaway')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway_reroll(self,i:discord.Interaction,message_id:str):
+        r=await self.get_giveaway(i,message_id)
+        if r['state']!='done': raise ValueError('End giveaway first.')
+        await i.response.defer(ephemeral=True); await self.bot.finish_giveaway(r['message'],reroll=True)
+        await reply(i,'New draw completed ✅')
+    @app_commands.guild_only()
+    @app_commands.command(description='Export up to 5000 ticket messages as a text transcript')
+    async def transcript(self,i:discord.Interaction):
+        r=self.bot.store.one('SELECT * FROM tickets WHERE channel=?',(i.channel_id,))
+        if not r or not is_staff(i.user,self.bot.store.config(i.guild_id)): raise ValueError('Staff only, inside a ticket.')
+        await i.response.defer(ephemeral=True)
+        lines=['TOV4R ticket transcript — last 5000 messages; attachment URLs only.']
+        async for m in i.channel.history(limit=5000,oldest_first=False):
+            lines.append(f'{m.created_at.isoformat()} | {m.author} ({m.author.id})\n{m.content}\n'+'\n'.join(a.url for a in m.attachments))
+        data=io.BytesIO('\n\n'.join(lines).encode())
+        await i.followup.send(file=discord.File(data,filename=f'ticket-{i.channel_id}.txt'),ephemeral=True)
 
-@bot.tree.command(name='sma3', description='🎵 Sma3 chi music: kteb smiya wla lien HTTPS')
-@app_commands.describe(ghnya='Smiya, lien public ou fichier audio direct HTTPS')
-async def sma3(interaction: discord.Interaction, ghnya: str):
-    st = await ensure_voice(interaction)
-    if not st: return
-    await interaction.response.defer(thinking=True)
-    if len(st.queue) >= MAX_QUEUE:
-        await interaction.followup.send('📛 Queue 3amra (80 max).', ephemeral=True)
-        return
-    try:
-        tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
-        if not tracks:
-            raise ValueError('Ma l9it ta track public w playable f had link.')
-    except Exception as exc:
-        log.warning('Track lookup failed: %s', exc)
-        await interaction.followup.send(embed=embed('SOURCE NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
-        return
-    st.queue.extend(tracks)
-    detail = f'✅ **{len(tracks)}** track(s) tzado l Queue.\n🎵 **{tracks[0].title}**'
-    if len(tracks) > 1: detail += f'\n📜 Playlist ({len(tracks)} titres) — `/list` bach tchouf lqueue.'
-    await interaction.followup.send(embed=embed('TZADAT L QUEUE', detail))
-    if not st.current and not st.lock.locked():
-        asyncio.create_task(advance(interaction.guild.id))
-
-@bot.tree.command(name='jaw', description='🔥 Khtar mood w TOV4R y9lleb lik 3la music')
-@app_commands.describe(mood='Khtar jaw dyalk')
-@app_commands.choices(mood=[
-    app_commands.Choice(name='🌙 Lofi chill', value='lofi chill instrumental'),
-    app_commands.Choice(name='🎮 Gaming focus', value='gaming background music instrumental'),
-    app_commands.Choice(name='🇲🇦 Chaabi', value='moroccan chaabi music'),
-    app_commands.Choice(name='🔥 Moroccan rap', value='moroccan rap music'),
-    app_commands.Choice(name='⚡ Phonk', value='phonk music'),
-])
-async def jaw(interaction: discord.Interaction, mood: app_commands.Choice[str]):
-    st = await ensure_voice(interaction)
-    if not st: return
-    await interaction.response.defer(thinking=True)
-    if len(st.queue) >= MAX_QUEUE:
-        await interaction.followup.send('Queue 3amra.', ephemeral=True)
-        return
-    try:
-        track = await find_track(mood.value, interaction.user.display_name)
-    except Exception as exc:
-        log.warning('Mood search failed: %s', exc)
-        await interaction.followup.send('❌ Mal9itch music l had jaw daba.', ephemeral=True)
-        return
-    st.queue.append(track)
-    await interaction.followup.send(embed=embed('JAW TOV4R', f'🔥 **{mood.name}**\n✅ Tzadat: **{track.title}**'))
-    if not st.current and not st.lock.locked():
-        asyncio.create_task(advance(interaction.guild.id))
-
-@bot.tree.command(name='skot', description='⏸️ W9ef lmusic chwya')
-async def skot(interaction: discord.Interaction):
-    await do_pause(interaction)
-
-@bot.tree.command(name='kml', description='▶️ Kmmel lmusic')
-async def kml(interaction: discord.Interaction):
-    await do_resume(interaction)
-
-@bot.tree.command(name='next', description='⏭️ Doz lghnya')
-async def next_song(interaction: discord.Interaction):
-    await do_skip(interaction)
-
-@bot.tree.command(name='saf', description='🧹 W9ef w khwi queue')
-async def saf(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    st.queue.clear()
-    st.loop = False
-    st.skip_requested = True
-    if st.voice and (st.voice.is_playing() or st.voice.is_paused()):
-        st.voice.stop()
-    else:
-        st.current = None
-    await interaction.response.send_message(embed=embed('SAFI', '🧹 Queue tms7at w music w9fat.'))
-
-def queue_embed(st: MusicState) -> discord.Embed:
-    lines = [f'**🎶 Daba:** {st.current.title}' if st.current else '**🎶 Daba:** Walo']
-    lines.extend(f'`{i:02}.` {t.title[:65]} • `{duration(t.duration)}`' for i,t in enumerate(list(st.queue)[:15], 1))
-    if len(st.queue) > 15:
-        lines.append(f'… w {len(st.queue)-15} okhrin')
-    lines.append(f'\n🔁 Loop: **{"ON" if st.loop else "OFF"}** • 🔊 Volume: **{round(st.volume*100)}%**')
-    return embed('TOV4R QUEUE', '\n'.join(lines))
-
-@bot.tree.command(name='list', description='📜 Chof lqueue')
-async def queue_list(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message('Server only', ephemeral=True)
-        return
-    await interaction.response.send_message(embed=queue_embed(state_for(interaction.guild.id)))
-
-@bot.tree.command(name='chno', description='🎧 Chno kattsma3 daba?')
-async def chno(interaction: discord.Interaction):
-    st = state_for(interaction.guild.id) if interaction.guild else MusicState()
-    if st.current:
-        e = embed('DABA KATTSMA3', f'**[{st.current.title}]({st.current.page_url})**\n🎤 {st.current.requester}\n⏱️ {duration(st.current.duration)}')
-        if st.current.thumbnail and safe_url(st.current.thumbnail):
-            e.set_thumbnail(url=st.current.thumbnail)
-        await interaction.response.send_message(embed=e, view=Controls())
-    else:
-        await interaction.response.send_message('🎵 Ma kayn ta chi ghnya daba.', ephemeral=True)
-
-@bot.tree.command(name='dour', description='🔁 3awd nafs lghnya automatiquement')
-async def dour(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    st.loop = not st.loop
-    await interaction.response.send_message(embed=embed('LOOP MODE', f'🔁 Loop **{"ON ✅" if st.loop else "OFF ❌"}**'))
-
-@bot.tree.command(name='mix', description='🔀 Khellt lqueue')
-async def mix(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    songs = list(st.queue)
-    random.shuffle(songs)
-    st.queue = deque(songs)
-    await interaction.response.send_message(embed=embed('MIX', f'🔀 Tkhlltat {len(songs)} ghnya!'))
-
-@bot.tree.command(name='volume', description='🔊 Bdell volume dyal lmusic (0-100)')
-@app_commands.describe(niveau='Volume bin 0 w 100')
-async def volume(interaction: discord.Interaction, niveau: app_commands.Range[int, 0, 100]):
-    st = await member_state(interaction)
-    if not st: return
-    st.volume = niveau / 100
-    if st.voice and isinstance(st.voice.source, discord.PCMVolumeTransformer):
-        st.voice.source.volume = st.volume
-    await interaction.response.send_message(embed=embed('VOLUME', f'🔊 Volume daba **{niveau}%**'))
-
-@bot.tree.command(name='khrej', description='👋 Khrej TOV4R mn vocal')
-async def khrej(interaction: discord.Interaction):
-    st = await member_state(interaction)
-    if not st: return
-    st.queue.clear()
-    st.loop = False
-    st.current = None
-    st.skip_requested = True
-    if st.voice:
-        await st.voice.disconnect(force=True)
-        st.voice = None
-    await interaction.response.send_message(embed=embed('BSSLAMA', '👋 TOV4R khrej mn vocal.'))
-
-@bot.tree.command(name='dj', description='💎 DJ Premium status, prix w accès')
-async def dj(interaction: discord.Interaction):
-    valid, expiry = get_access(interaction.user.id)
-    if valid:
-        status = '👑 OWNER • accès gratuit à vie' if OWNER_ID == interaction.user.id else f'✅ DJ Premium actif jusqu’au <t:{expiry}:F>'
-    else:
-        status = '🔒 DJ Premium non actif'
-    await interaction.response.send_message(embed=embed('DJ MODE',
-        f'{status}\n\n💳 **Prix:** {DJ_PRICE}\n'
-        'Pour acheter: tواصل مع propriétaire du bot. Activation manuelle après confirmation.\n\n'
-        '**Commandes DJ:** `/djplay`, `/djremove`, `/djmove`, `/djclear`.\n'
-        '**Gestion owner:** `/djgrant`, `/djrevoke`.\n'
-        '🎵 Les commandes normales restent gratuites.'), ephemeral=True)
-
-@bot.tree.command(name='djgrant', description='👑 Owner: active DJ Premium pour un membre')
-@app_commands.describe(membre='Membre à activer', jours='Durée du pass, en jours (1-365)')
-async def djgrant(interaction: discord.Interaction, membre: discord.Member, jours: app_commands.Range[int, 1, 365] = 30):
-    if not OWNER_ID or interaction.user.id != OWNER_ID:
-        await interaction.response.send_message('⛔ Hadi ghir l owner dyal TOV4R.', ephemeral=True)
-        return
-    if membre.bot:
-        await interaction.response.send_message('⛔ Ma ymknch t3ti DJ Pass l bots.', ephemeral=True)
-        return
-    now = int(time.time())
-    _, previous = get_access(membre.id)
-    expiry = max(now, previous) + int(jours) * 86400
-    with open_db() as conn:
-        conn.execute('INSERT INTO dj_access (user_id, expires_at) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at', (membre.id, expiry))
-        conn.commit()
-    await interaction.response.send_message(embed=embed('DJ PASS ACTIVÉ',
-        f'✅ {membre.mention} 3ndo DJ Premium 7tta <t:{expiry}:F>\n'
-        '⚠️ T2kked mn paiement qbel ma tactivih.'), ephemeral=True)
-
-@bot.tree.command(name='djrevoke', description='👑 Owner: supprime le DJ Premium d’un membre')
-@app_commands.describe(membre='Membre à désactiver')
-async def djrevoke(interaction: discord.Interaction, membre: discord.Member):
-    if not OWNER_ID or interaction.user.id != OWNER_ID:
-        await interaction.response.send_message('⛔ Hadi ghir l owner.', ephemeral=True)
-        return
-    if membre.id == OWNER_ID:
-        await interaction.response.send_message('👑 Owner kayb9a free à vie.', ephemeral=True)
-        return
-    with open_db() as conn:
-        conn.execute('DELETE FROM dj_access WHERE user_id=?', (membre.id,))
-        conn.commit()
-    await interaction.response.send_message(f'✅ DJ Premium t7yed mn {membre.mention}.', ephemeral=True)
-
-@bot.tree.command(name='djplay', description='💎 DJ: 7ett chi ghnya louwla f queue')
-@app_commands.describe(ghnya='Smiya, lien ou playlist publique')
-async def djplay(interaction: discord.Interaction, ghnya: str):
-    if not await require_dj(interaction): return
-    st = await ensure_voice(interaction)
-    if not st: return
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    if len(st.queue) >= MAX_QUEUE:
-        await interaction.followup.send('Queue 3amra.', ephemeral=True)
-        return
-    try:
-        tracks = await find_tracks(ghnya, interaction.user.display_name, min(MAX_QUEUE - len(st.queue), MAX_PLAYLIST_IMPORT))
-        if not tracks:
-            raise ValueError('Playlist/source non disponible.')
-    except Exception as exc:
-        log.warning('DJ play lookup failed: %s', exc)
-        await interaction.followup.send(f'❌ {str(exc)[:300]}', ephemeral=True)
-        return
-    for track in reversed(tracks):
-        st.queue.appendleft(track)
-    await interaction.followup.send(embed=embed('DJ PRIORITY', f'💎 **{len(tracks)} tracks** tzado louwlin!\n🎧 {tracks[0].title}'), ephemeral=True)
-    if not st.current and not st.lock.locked():
-        asyncio.create_task(advance(interaction.guild.id))
-
-@bot.tree.command(name='djremove', description='💎 DJ: 7yed ghnya mn queue b numéro')
-@app_commands.describe(numero='Numéro depuis /list (1,2,3...)')
-async def djremove(interaction: discord.Interaction, numero: app_commands.Range[int, 1, 80]):
-    if not await require_dj(interaction): return
-    st = await member_state(interaction)
-    if not st: return
-    async with st.lock:
-        items = list(st.queue)
-        if numero > len(items):
-            await interaction.response.send_message('❌ Had numéro makaynch f queue.', ephemeral=True)
-            return
-        removed = items.pop(numero - 1)
-        st.queue = deque(items)
-    await interaction.response.send_message(embed=embed('DJ REMOVE', f'🗑️ T7ydat **{removed.title}**.'), ephemeral=True)
-
-@bot.tree.command(name='djmove', description='💎 DJ: bddl tartib dyal queue')
-@app_commands.describe(mn='Numéro l9dim', l='Numéro jdid')
-async def djmove(interaction: discord.Interaction, mn: app_commands.Range[int, 1, 80], l: app_commands.Range[int, 1, 80]):
-    if not await require_dj(interaction): return
-    st = await member_state(interaction)
-    if not st: return
-    async with st.lock:
-        items = list(st.queue)
-        if mn > len(items) or l > len(items):
-            await interaction.response.send_message('❌ Numéro kharej queue.', ephemeral=True)
-            return
-        track = items.pop(mn - 1)
-        items.insert(l - 1, track)
-        st.queue = deque(items)
-    await interaction.response.send_message(embed=embed('DJ MOVE', f'🎛️ **{track.title}**: `{mn}` → `{l}`'), ephemeral=True)
-
-@bot.tree.command(name='djclear', description='💎 DJ: khwi queue bla ma tstop music')
-async def djclear(interaction: discord.Interaction):
-    if not await require_dj(interaction): return
-    st = await member_state(interaction)
-    if not st: return
-    async with st.lock:
-        count = len(st.queue)
-        st.queue.clear()
-    await interaction.response.send_message(embed=embed('DJ CLEAR', f'🧹 Tmsa7o {count} ghnya mn queue.'), ephemeral=True)
-
-@bot.tree.command(name='status', description='🩺 Wach TOV4R connected w kaytsma3 f vocal?')
-async def status(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message('⛔ Server only.', ephemeral=True)
-        return
-    st = state_for(interaction.guild.id)
-    vc = interaction.guild.voice_client
-    if not vc or not vc.is_connected():
-        state = '🔴 Ma dakhloch l vocal'
-    elif vc.is_paused():
-        state = '⏸️ Music paused'
-    elif vc.is_playing():
-        state = '🟢 Discord voice player kaykhdem (ma kaydmench belli l audio kaytsma3)'
-    else:
-        state = '🟠 F vocal walakin ma kayplayi ta audio daba'
-    channel_name = vc.channel.name if vc and vc.channel else '—'
-    current = st.current.title if st.current else '—'
-    await interaction.response.send_message(embed=embed('TOV4R • STATUS',
-        f'**Statut:** {state}\n**Salon:** {channel_name}\n'
-        f'**Track:** {current}\n**FFmpeg:** {"✅ Kayn f PATH" if shutil.which(FFMPEG) else "❌ Ma tl9ach"}\n\n'
-        '💡 Ila silent, dir `/testaudio` (pure Python), puis `/testffmpeg`. Sift CMD logs.'), ephemeral=True)
-
-class PureTone(discord.AudioSource):
-    """12s, 440 Hz, 48kHz stereo PCM — no FFmpeg or internet needed."""
-    def __init__(self, seconds: int = 12):
-        self.packet = 0
-        self.packets = seconds * 50
-        self.one_second = bytearray()
-        for i in range(48_000):
-            sample = int(10000 * math.sin(2 * math.pi * 440 * i / 48_000))
-            self.one_second.extend(struct.pack('<hh', sample, sample))
-        self.one_second = bytes(self.one_second)
-
-    def read(self) -> bytes:
-        if self.packet >= self.packets:
-            log.info('PURE AUDIO: all %s PCM packets delivered to voice player', self.packet)
-            return b''
-        offset = (self.packet % 50) * 3840
-        self.packet += 1
-        if self.packet == 1 or self.packet % 100 == 0:
-            log.info('PURE AUDIO: generated packet %s/%s', self.packet, self.packets)
-        return self.one_second[offset:offset + 3840]
-
-    def is_opus(self) -> bool:
-        return False
-
-
-async def prepare_audio_test(interaction: discord.Interaction):
-    st = await ensure_voice(interaction)
-    if not st:
-        return None
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    vc = st.voice
-    if not vc or not vc.is_connected():
-        await interaction.followup.send('❌ Bot ma connectach l vocal.', ephemeral=True)
-        return None
-    # Cancel ongoing music before testing (otherwise testaudio only said "busy").
-    st.loop = False
-    st.queue.clear()
-    st.skip_requested = True
-    if vc.is_playing() or vc.is_paused():
-        vc.stop()
-        await asyncio.sleep(0.4)
-    st.current = None
-    return vc
-
-
-@bot.tree.command(name='testaudio', description='🔊 Test son 12s b pure Python, bla FFmpeg/YouTube')
-async def testaudio(interaction: discord.Interaction):
-    vc = await prepare_audio_test(interaction)
-    if not vc:
-        return
-    try:
-        sound = PureTone(seconds=12)
-        log.info('PURE AUDIO START: opus_loaded=%s voice_connected=%s', discord.opus.is_loaded(), vc.is_connected())
-        def after_tone(error):
-            if error:
-                log.error('PURE AUDIO error: %r', error)
-            else:
-                log.info('PURE AUDIO ended normally; sent %s/%s PCM packets', sound.packet, sound.packets)
-        vc.play(sound, after=after_tone)
-        await interaction.followup.send(embed=embed('TEST AUDIO • PYTHON',
-            '🔊 **Daba 12 secondes dyal son test!** 7ett volume bot 100%, o sm3 mzyan.\n'
-            'Had test ma kayst3ml la FFmpeg la YouTube: ila b9a silent rah khassna nsaybo Discord voice/Opus.\n'
-            '📋 F CMD khassk tchouf: `PURE AUDIO START`, `PURE AUDIO: generated packet` o `PURE AUDIO ended normally`.\n'
-            '❗ Ila ma sme3ti walo, sift screenshot CMD mn b3d 12s, bla Token.'), ephemeral=True)
-    except Exception as exc:
-        log.exception('PURE AUDIO FAILED: %s', exc)
-        await interaction.followup.send(embed=embed('TEST AUDIO • ERROR',
-            f'❌ Error: `{type(exc).__name__}`. Sift screenshot CMD, bla Token.'), ephemeral=True)
-
-
-@bot.tree.command(name='testffmpeg', description='🎚️ Test FFmpeg direct 12 secondes, bla internet')
-async def testffmpeg(interaction: discord.Interaction):
-    vc = await prepare_audio_test(interaction)
-    if not vc:
-        return
-    try:
-        audio = discord.FFmpegPCMAudio(
-            'sine=frequency=523:sample_rate=48000:duration=12',
-            executable=FFMPEG, before_options='-f lavfi',
-            options='-ac 2 -ar 48000 -loglevel warning',
-        )
-        log.info('FFMPEG AUDIO START: ffmpeg=%s', FFMPEG)
-        vc.play(audio, after=lambda error: log.error('FFMPEG TEST error: %r', error) if error else log.info('FFMPEG TEST ended normally'))
-        await interaction.followup.send(embed=embed('TEST FFMPEG',
-            '🎚️ Ghadi tsma3 son test 12s. Ila `/testaudio` khddam o hadi la, lmochkil f FFmpeg.\n'
-            '📋 Sift screenshot dyal CMD ila ma sm3ti walo.'), ephemeral=True)
-    except Exception as exc:
-        log.exception('FFMPEG TEST failed: %s', exc)
-        await interaction.followup.send(f'❌ FFmpeg test error: `{type(exc).__name__}`. Sift CMD.', ephemeral=True)
-
-
-@bot.tree.command(name='testlink', description='🔎 Chof wach lien/music t9dr tt7el b yt-dlp')
-@app_commands.describe(lien='Lien HTTPS public: song, stream mp3 ou m3u8')
-async def testlink(interaction: discord.Interaction, lien: str):
-    if not interaction.guild:
-        await interaction.response.send_message('⛔ Server only.', ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    if not safe_url(lien) or len(lien) > 500:
-        await interaction.followup.send('❌ Lien HTTPS s7i7, 500 caractères max.', ephemeral=True)
-        return
-    try:
-        track = await find_track(lien, interaction.user.display_name)
-        info, diagnostic = await asyncio.wait_for(
-            asyncio.to_thread(playable_audio_sync, track), timeout=130)
-        works = bool(info and info.get('url'))
-        await interaction.followup.send(embed=embed('TEST LINK • SOURCE AUDIO',
-            f'✅ Lien t9ra: **{track.title}**\n'
-            + ('✅ **FFmpeg qra son:** ' if works else '❌ **FFmpeg ma 9rach son:** ')
-            + diagnostic + '\n\n'
-            + ('Jarrab `/sma3` daba.' if works else
-               'Hadchi y3ni lmochkil f source/FFmpeg, machi f Discord Voice.')),
-            ephemeral=True)
-    except Exception as exc:
-        log.warning('Test link failed: %s: %s', type(exc).__name__, str(exc)[:350])
-        await interaction.followup.send(embed=embed('TEST LINK • MA KHEDMATCH',
-            f'❌ Had lien ma t7ellch: **{type(exc).__name__}**\n'
-            'Jarrab lien YouTube/SoundCloud akhor, ou met a jour yt-dlp. '
-            'Chof CMD logs bla ma tsift token.'), ephemeral=True)
-
-@bot.tree.command(name='spotifyinfo', description='🟢 Lien Spotify: afficher infos playlist/album/track (pas de stream)')
-@app_commands.describe(lien='Lien Spotify track/album/playlist')
-async def spotifyinfo(interaction: discord.Interaction, lien: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    if not spotify_type(lien):
-        await interaction.followup.send('❌ Lien open.spotify.com/track, /album ou /playlist requis.', ephemeral=True)
-        return
-    try:
-        title, titles = await asyncio.wait_for(asyncio.to_thread(spotify_metadata_sync, lien), timeout=65)
-        lines = '\n'.join(f'`{n:02}` {t[:130]}' for n, t in enumerate(titles[:15], 1))
-        extra = f'\n…et {len(titles)-15} autres.' if len(titles)>15 else ''
-        await interaction.followup.send(embed=embed('SPOTIFY • METADATA ONLY',
-            f'**{title}**\n{lines}{extra}\n\n🔗 [Ouvrir sur Spotify]({lien})\n'
-            '⚠️ L API fournit les infos, pas le son a diffuser sur Discord. '
-            'Pour jouer: utilise un lien audio qui permet sa diffusion.'), ephemeral=True)
-    except Exception as exc:
-        log.warning('Spotify metadata failed: %s', type(exc).__name__)
-        await interaction.followup.send(embed=embed('SPOTIFY NON DISPONIBLE', str(exc)[:350]), ephemeral=True)
-
-
-@bot.tree.command(name='tov4r', description='🎛️ Panel + ga3 commandes + DJ Premium')
-async def tov4r(interaction: discord.Interaction):
-    e = embed('TOV4R MUSIC • GUIDE & CONTROL ROOM',
-        '🎧 **Mer7ba bik f TOV4R MUSIC!**\n'
-        'Les commandes normales **FREE**, DJ Mode **Premium**.\n'
-        '🔊 Dkhol l salon vocal, w kteb `/sma3` bach tbda!')
-    e.add_field(name='🎵 MUSIC • FREE', value=(
-        '`/sma3` — smiya, YouTube/SoundCloud/Bandcamp playlists\n'
-        '`/spotifyinfo` — infos Spotify (pas de streaming)\n'
-        '`/jaw` — choix dyal vibe: lofi, gaming, chaabi, rap, phonk\n'
-        '`/skot` — pause lmusic\n'
-        '`/kml` — kmmel lmusic\n'
-        '`/next` — doz lghnya li mn b3d\n'
-        '`/saf` — 7bes lmusic w khwi queue\n'
-        '`/list` — chof queue\n'
-        '`/chno` — chno kattsma3 daba\n'
-        '`/dour` — repeat lghnya\n'
-        '`/mix` — khllat queue\n'
-        '`/volume` — bdell volume 0-100\n'
-        '`/khrej` — khrej bot mn vocal\n'
-        '`/status` — statut dyal bot f vocal\n'
-        '`/ping` — chof wach bot kayjawb f had serveur\n'
-        '`/testaudio` — 12 secondes test bla FFmpeg / lien\n'
-        '`/testffmpeg` — test FFmpeg direct 12s\n'
-        '`/testlink` — test lien w yt-dlp'), inline=False)
-    e.add_field(name='💎 DJ MODE • PREMIUM', value=(
-        '`/dj` — chof prix w status dyal abonnement\n'
-        '`/djplay` — zid ghnya louwla f queue\n'
-        '`/djremove` — 7yed chi ghnya b numéro\n'
-        '`/djmove` — bddl tartib dyal queue\n'
-        '`/djclear` — khwi queue bla stop dyal lmusic\n'
-        f'💳 **Prix:** {DJ_PRICE} • Activation manuelle mn owner'), inline=False)
-    e.add_field(name='👑 OWNER ONLY', value=(
-        '`/djgrant` — f3el DJ Premium ba3d paiement\n'
-        '`/djrevoke` — 7yed DJ Premium\n'
-        '👑 Owner 3ndo DJ access free à vie.'), inline=False)
-    await interaction.response.send_message(embed=e, view=Controls())
-
-@bot.tree.error
-async def command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    log.exception('Command failed: %s', error)
-    msg = '❌ Wa9e3 mochkil. 3awed jarrab w chof logs ila b9a.'
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-    except discord.HTTPException:
-        pass
-
-if __name__ == '__main__':
-    if not TOKEN:
-        raise SystemExit('DISCORD_TOKEN missing. Copy .env.example to .env and fill token.')
-    if not shutil.which(FFMPEG):
-        raise SystemExit('FFmpeg not found. Install FFmpeg and put it in PATH, or set FFMPEG_PATH.')
-    bot.run(TOKEN, log_handler=None)
+if __name__=='__main__':
+    logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    token=os.getenv('DISCORD_TOKEN','').strip()
+    if not token or token=='PASTE_BOT_TOKEN_HERE':
+        raise SystemExit('Set DISCORD_TOKEN in .env. Read README_FR.md. Never share your token.')
+    # Railway volumes are root-owned on first mount. Initialise ownership, then
+    # permanently drop privileges before opening the database or connecting.
+    if hasattr(os,'geteuid') and os.geteuid()==0:
+        import pwd
+        account=pwd.getpwnam('app')
+        data_path=Path(os.getenv('DATABASE_PATH','data/community.db')).resolve().parent
+        data_path.mkdir(parents=True,exist_ok=True)
+        os.chown(data_path,account.pw_uid,account.pw_gid)
+        for file in data_path.iterdir():
+            if file.is_file() and not file.is_symlink(): os.chown(file,account.pw_uid,account.pw_gid)
+        os.setgroups([]); os.setgid(account.pw_gid); os.setuid(account.pw_uid)
+    Community().run(token,log_handler=None)

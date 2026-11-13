@@ -1,0 +1,23 @@
+TOV4R COMMUNITY — kolchi f projet wa7ed
+
+1. Dezipi dossier.
+2. Installi Python 3.12+.
+3. Sna3 application jdida f https://discord.com/developers/applications
+4. F Bot: active Server Members Intent + Message Content Intent.
+5. Double-click START_WINDOWS.bat.
+6. Dkhel token f terminal (makaybanch), Application ID.
+7. Ouvre lien invitation li yban, zid bot l server.
+8. Tle3 role dyal bot fo9 roles li khas ycontrola.
+9. Dir /setup f server.
+10. Ouvre http://127.0.0.1:8080. Clé dyal dashboard kayna f .env: DASHBOARD_KEY.
+
+TOKEN: matseftoch f chat, mat7toch f GitHub.
+Bot khas yb9a programme dyalo khdam. Ila tsed PC, bot kayt9ta3.
+24/7: fichiers Docker wajdin, khas machine / hosting ch3al.
+Kolchi mcharo7 b détail f README_FR.md.
+
+Had livraison fiha code + tests. Mazal ma tconnectach b Discord, ma deployach.
+
+VERSION MULTI-SERVERS: /invite bach tzid bot f server akhor.
+F Developer Portal active Public Bot. Kol server ydir /setup.
+railway.json wajd, walakin deployment mazal ma dar: khas connexion Discord.

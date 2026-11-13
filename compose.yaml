@@ -1,0 +1,15 @@
+services:
+  community:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_PATH: /app/data/community.db
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - community-data:/app/data
+volumes:
+  community-data:
