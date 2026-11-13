@@ -44,7 +44,7 @@ def safe_role(role, guild):
 class Community(commands.Bot):
     def __init__(self, store=None):
         intents=discord.Intents.default(); intents.members=True; intents.message_content=True
-        super().__init__(command_prefix=commands.when_mentioned, intents=intents,
+        super().__init__(command_prefix=".", case_insensitive=True, intents=intents,
                          allowed_mentions=discord.AllowedMentions.none())
         self.store=store or Store(os.getenv('DATABASE_PATH','data/community.db'))
         self.locks=collections.defaultdict(asyncio.Lock)
@@ -56,6 +56,8 @@ class Community(commands.Bot):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
+        from voice_commands import VoiceCommands
+        await self.add_cog(VoiceCommands(self))
         self.add_view(VoicePanel(self)); self.add_view(TicketPanel(self)); self.add_view(CloseTicket(self))
         for r in self.store.all("SELECT * FROM giveaways WHERE state IN ('open','drawn')"):
             self.add_view(GiveawayPanel(self,r['message']),message_id=r['message'])
@@ -146,6 +148,9 @@ class Community(commands.Bot):
                     except discord.HTTPException: pass
                 await self.audit(message.guild,'AutoMod',f'{message.author.id}: {reason}')
                 return
+        if message.content.startswith('.'):
+            await self.process_commands(message)
+            return
         if cfg['levels']:
             up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
             if up is not None:
@@ -416,7 +421,7 @@ class Features(commands.Cog):
     async def help_command(self,i:discord.Interaction):
         await i.response.send_message(embed=embed('TOV4R • Command center',
             '**Members**\n/help · /invite · /rank · /leaderboard · /serverinfo\n'
-            '**Voice**\nJoin ➕ Create your room → use voice-panel buttons.\n'
+            '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
             '**Staff**\n/setup · /configure · /panels · /rolepanel · /announce\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
