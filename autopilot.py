@@ -55,7 +55,8 @@ def private_json(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-class ServerAutopilot(commands.Cog):
+class ServerAutopilot(commands.GroupCog, group_name="autopilot",
+                      group_description="One-shot 1729 audit and reporting"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.started = set()
@@ -195,7 +196,7 @@ class ServerAutopilot(commands.Cog):
                     f"Safe permission changes: {len(record['actions'])}. "
                     f"Items for manual review: {after['summary']['issues_to_review']}. "
                     "No role/channel deletion or bot changes. "
-                    "Use /server automatic_report for the private report.")
+                    "Use /autopilot report for the private report.")
             except (discord.HTTPException, KeyError) as exc:
                 LOG.warning("Could not publish audit notice: %s", exc)
         except Exception:
@@ -203,7 +204,7 @@ class ServerAutopilot(commands.Cog):
             self.started.discard(guild.id)
 
     @app_commands.command(
-        name="automatic_report",
+        name="report",
         description="Read the latest one-shot 1729 audit, actions and backup"
     )
     @app_commands.guild_only()
