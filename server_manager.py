@@ -390,6 +390,49 @@ class ServerManager(commands.GroupCog, group_name="server",
                      f"\nTo: {category.name}\nExisting channel overrides won't be synchronized.",
                      view=Confirm(i.user.id, i.guild_id, apply))
 
+    @app_commands.command(name="private_channel", description="Preview hiding one text channel from @everyone")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def private_channel(self, i: discord.Interaction,
+                              channel: discord.TextChannel):
+        if not i.guild.me or not i.guild.me.guild_permissions.manage_roles:
+            return await secret(i, "Bot needs Manage Roles to change channel overwrites.")
+        public = i.guild.default_role
+        before = channel.overwrites_for(public)
+        before_allow, before_deny = before.pair()
+        if before.view_channel is False:
+            return await secret(i, "Already denies View Channel for @everyone.")
+        baseline = before_allow.value, before_deny.value
+
+        async def apply(confirm_i: discord.Interaction):
+            if not confirm_i.user.guild_permissions.manage_roles:
+                raise ValueError("You need Manage Roles.")
+            if not confirm_i.guild.me.guild_permissions.manage_roles:
+                raise ValueError("Bot needs Manage Roles.")
+            current = channel.overwrites_for(public)
+            allow, deny = current.pair()
+            if (allow.value, deny.value) != baseline:
+                raise ValueError("Overwrites changed since preview; rerun command.")
+            current.view_channel = False
+            await channel.set_permissions(
+                public, overwrite=current,
+                reason=f"TOV4R confirmed by {confirm_i.user.id}"
+            )
+            await self.bot.audit(
+                i.guild, "Channel privacy",
+                f"#{channel.name}: @everyone View Channel denied by {confirm_i.user.id}"
+            )
+            return f"#{channel.name}: @everyone View Channel denied."
+
+        await secret(
+            i, f"**Preview — Hide #{channel.name} from @everyone**"
+            "\nOnly the @everyone overwrite changes. Users with another role "
+            "that explicitly allows View Channel may STILL see this channel."
+            "\n⚠ Make sure your intended staff roles can still access it."
+            "\nNothing changes without Confirm.",
+            view=Confirm(i.user.id, i.guild_id, apply)
+        )
+
     async def cog_app_command_error(self, i: discord.Interaction,
                                     error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
