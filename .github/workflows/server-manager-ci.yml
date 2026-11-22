@@ -1,0 +1,32 @@
+name: Server manager checks
+on:
+  push:
+    branches:
+      - feature/server-manager-v1-20261122
+  pull_request:
+    branches:
+      - community/tov4r-bot
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install existing bot dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python source without starting bot
+        run: python -m compileall -q bot.py server_manager.py voice_commands.py store.py dashboard.py
+      - name: Import and validate new command group
+        run: |
+          python - <<'PY'
+          from server_manager import ServerManager
+          names = {cmd.name for cmd in ServerManager.__cog_app_commands__}
+          wanted = {'scan', 'bots', 'fix_everyone', 'harden_role',
+                    'remove_role', 'move_channel', 'private_channel'}
+          missing = wanted - names
+          assert not missing, f'Missing commands: {sorted(missing)}'
+          print('Server manager commands verified:', ', '.join(sorted(names)))
+          PY
