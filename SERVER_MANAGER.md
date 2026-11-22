@@ -12,6 +12,7 @@ This feature is added to the **existing community bot**; it does not replace mus
 | /server harden_role role:<role> | Preview and confirm removal of high-risk permissions from one chosen role. | Only with confirmation |
 | /server remove_role role:<role> | Server-owner-only removal of **one empty, non-managed, non-protected role**, after confirmation. | Only with confirmation |
 | /server move_channel channel:<text-channel> category:<category> | Move one text channel, preserving its permission overwrites (no sync), after confirmation. | Only with confirmation |
+| /server private_channel channel:<text-channel> | Deny View Channel to @everyone while preserving other overwrites; another explicit role allow can still grant visibility. | Only with confirmation |
 
 ## Scope and safeguards
 
