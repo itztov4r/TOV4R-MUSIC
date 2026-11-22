@@ -58,6 +58,8 @@ class Community(commands.Bot):
         await self.add_cog(Features(self))
         from voice_commands import VoiceCommands
         await self.add_cog(VoiceCommands(self))
+        from server_manager import ServerManager
+        await self.add_cog(ServerManager(self))
         self.add_view(VoicePanel(self)); self.add_view(TicketPanel(self)); self.add_view(CloseTicket(self))
         for r in self.store.all("SELECT * FROM giveaways WHERE state IN ('open','drawn')"):
             self.add_view(GiveawayPanel(self,r['message']),message_id=r['message'])
