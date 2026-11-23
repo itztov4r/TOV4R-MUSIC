@@ -23,6 +23,26 @@ The bot also retains the existing generic TOV4R setup: welcome, private support/
 - `/setup type: 🎬 Movies & Cinema` — complete movies server
 - `/setup type: 🎮 Gaming` — complete gaming server
 - `/setup` — use the previously selected type for that server; defaults to General Community
+- `/setup type: Gaming cleanup: true` — create/reuse Gaming layout, then delete **only verified empty channels created by TOV4R in other templates**, up to 12 at a time
+
+### New permission policy
+
+- New public text channels are readable/writable by everyone, except **rules**, **announcements**, and **choose-roles** where regular members cannot send messages.
+- Voice channels have explicit view/connect/speak permissions for members.
+- New self-assignable interest roles have standard chat/voice permissions but no moderator, admin, management or mass-mention powers.
+- Bot retains permission to send its embedded rules and self-roles buttons.
+- Existing user-created resources and customized permissions are not overwritten. Only provably bot-owned channels with untouched permissions can be repaired automatically on a later run.
+
+### Cleanup rules
+
+Cleanup is **off by default** because Discord channel deletion is irreversible. A manager must explicitly invoke the `cleanup: true` slash option. There is no additional confirmation dialog.
+
+- Only channels in older templates that this newer bot version recorded as **created by itself** can be removed.
+- The channel must be empty, have unchanged standard overwrites, remain in its original bot-created category, and have an unmodified name and topic/settings.
+- Text channels with any messages, threads or unknown history are preserved; occupied/customized voice channels are preserved.
+- No human-owned channels, active-template channels, configured welcome/logs/tickets/voice creator, categories, roles or bots are deleted.
+- Template channels created by **older bot versions before ownership tracking** are **not** eligible for deletion automatically; an administrator can review those manually.
+
 
 > Discord shows the labels in a dropdown; do not type the emojis manually.
 

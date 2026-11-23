@@ -23,6 +23,10 @@ class FakeRole:
         self.id = role_id
         self.name = name
         self.permissions = permissions
+        self.managed = False
+
+    async def edit(self, *, permissions, reason):
+        self.permissions = permissions
 
 
 class FakeCategory:
@@ -38,10 +42,23 @@ class FakeText:
         self.id = channel_id
         self.name = name
         self.category = category
+        self.category_id = category.id
         self.topic = topic
         self.overwrites = overwrites
         self.messages = {}
+        self.threads = []
         self.guild = guild
+
+    async def history(self, limit=1):
+        for message in list(self.messages.values())[-limit:]:
+            yield message
+
+    async def edit(self, *, overwrites, reason):
+        self.overwrites = overwrites
+
+    async def delete(self, *, reason):
+        self.category.text_channels.remove(self)
+        self.guild.channels.pop(self.id, None)
 
     async def send(self, *, embed, allowed_mentions=None, view=None):
         mid = self.guild.new_id()
@@ -54,10 +71,21 @@ class FakeText:
 
 
 class FakeVoice:
-    def __init__(self, channel_id, name, category):
+    def __init__(self, channel_id, name, category, overwrites, guild):
         self.id = channel_id
         self.name = name
         self.category = category
+        self.category_id = category.id
+        self.overwrites = overwrites
+        self.members = []
+        self.guild = guild
+
+    async def edit(self, *, overwrites, reason):
+        self.overwrites = overwrites
+
+    async def delete(self, *, reason):
+        self.category.voice_channels.remove(self)
+        self.guild.channels.pop(self.id, None)
 
 
 class FakeGuild:
@@ -104,8 +132,10 @@ class FakeGuild:
         self.channels[channel.id] = channel
         return channel
 
-    async def create_voice_channel(self, name, *, category, reason):
-        channel = FakeVoice(self.new_id(), name, category)
+    async def create_voice_channel(self, name, *, category, overwrites, reason):
+        if not isinstance(overwrites, dict):
+            raise TypeError("overwrites parameter expects a dict.")
+        channel = FakeVoice(self.new_id(), name, category, overwrites, self)
         category.voice_channels.append(channel)
         self.channels[channel.id] = channel
         return channel
@@ -129,11 +159,11 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
             item.stop()
         self.store.db.close()
 
-    async def apply(self, template_key):
+    async def apply(self, template_key, *, cleanup=False):
         return await tpl.apply_template(
             self.bot, self.guild, template_key,
             panel_factory=lambda bot, roles: ("panel", roles),
-            safe_role_fn=lambda role, guild: True,
+            safe_role_fn=lambda role, guild: True, cleanup=cleanup,
         )
 
     async def test_movies_creates_complete_server_without_admin_roles(self):
@@ -143,7 +173,9 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(result["channels_new"]), 10)
         self.assertEqual(result["roles_panel"], "created")
         self.assertEqual(self.store.config(self.guild.id)["server_type"], "movies")
-        self.assertTrue(all(role.permissions.value == 0 for role in self.guild.roles))
+        self.assertTrue(all(not role.permissions.administrator for role in self.guild.roles))
+        self.assertTrue(all(not role.permissions.manage_roles for role in self.guild.roles))
+        self.assertTrue(all(role.permissions.send_messages for role in self.guild.roles))
         self.assertIn("movie-reviews", [ch.name for ch in self.guild.channels.values()])
         self.assertIn("movie-spoilers", [ch.name for ch in self.guild.channels.values()])
         self.assertIn("🍿 Watch Party", [ch.name for ch in self.guild.channels.values()])
@@ -162,7 +194,8 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(channels)
         self.assertTrue(all(isinstance(ch.overwrites, dict) for ch in channels))
         public = next(ch for ch in channels if ch.name == "movie-chat")
-        self.assertEqual(public.overwrites, {})
+        self.assertIsInstance(public.overwrites, dict)
+        self.assertTrue(public.overwrites[self.guild.default_role].send_messages)
         readonly = next(ch for ch in channels if ch.name == "cinema-rules")
         self.assertIn(self.guild.default_role, readonly.overwrites)
 
@@ -193,6 +226,61 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store.all(
             "SELECT * FROM role_panels WHERE guild=?", (self.guild.id,)
         )), 2)
+
+    async def test_public_text_and_voice_permissions(self):
+        await self.apply("movies")
+        public = next(ch for ch in self.guild.channels.values()
+                      if isinstance(ch, FakeText) and ch.name == "movie-chat")
+        choose = next(ch for ch in self.guild.channels.values()
+                      if isinstance(ch, FakeText) and ch.name == "choose-roles")
+        rule = next(ch for ch in self.guild.channels.values()
+                    if isinstance(ch, FakeText) and ch.name == "cinema-rules")
+        voice = next(ch for ch in self.guild.channels.values()
+                     if isinstance(ch, FakeVoice) and ch.name == "🍿 Watch Party")
+        everyone = self.guild.default_role
+        self.assertTrue(public.overwrites[everyone].send_messages)
+        self.assertTrue(public.overwrites[everyone].view_channel)
+        self.assertFalse(rule.overwrites[everyone].send_messages)
+        self.assertFalse(choose.overwrites[everyone].send_messages)
+        self.assertTrue(voice.overwrites[everyone].connect)
+
+    async def test_cleanup_deletes_only_empty_bots_channels_from_old_theme(self):
+        await self.apply("movies")
+        await self.apply("gaming")
+        clean = await self.apply("gaming", cleanup=True)
+        self.assertIsNotNone(clean["cleanup"])
+        self.assertIn("movie-chat", clean["cleanup"]["deleted"])
+        self.assertIn("🍿 Watch Party", clean["cleanup"]["deleted"])
+        remaining = [ch.name for ch in self.guild.channels.values()]
+        self.assertNotIn("movie-chat", remaining)
+        self.assertNotIn("🍿 Watch Party", remaining)
+        # Rules and role panel contain bot messages: NEVER delete them.
+        self.assertIn("cinema-rules", remaining)
+        self.assertIn("choose-roles", remaining)
+        # Active gaming template is untouched.
+        self.assertIn("game-chat", remaining)
+
+    async def test_cleanup_respects_modified_permissions_and_other_messages(self):
+        await self.apply("movies")
+        channel = next(ch for ch in self.guild.channels.values()
+                       if isinstance(ch, FakeText) and ch.name == "movie-chat")
+        channel.overwrites = {}  # User customized: no longer equals template policy.
+        await self.apply("gaming")
+        clean = await self.apply("gaming", cleanup=True)
+        self.assertNotIn("movie-chat", clean["cleanup"]["deleted"])
+        self.assertIn(channel.id, self.guild.channels)
+
+    async def test_cleanup_never_deletes_preexisting_channels_or_roles(self):
+        # An arbitrary user-created empty channel is NOT tracked as bot-created.
+        category = await self.guild.create_category("User Category", reason="manual")
+        channel = await self.guild.create_text_channel(
+            "old-unused-channel", category=category, topic="",
+            overwrites={}, reason="manual",
+        )
+        await self.apply("movies")
+        await self.apply("gaming", cleanup=True)
+        self.assertIn(channel.id, self.guild.channels)
+        self.assertTrue(all(role in self.guild.roles for role in self.guild.roles))
 
     def test_all_template_definitions_are_unique_and_safe(self):
         self.assertGreaterEqual(len(tpl.TEMPLATES), 9)

@@ -53,6 +53,11 @@ class Store:
             item_key TEXT NOT NULL, discord_id INTEGER NOT NULL, kind TEXT NOT NULL,
             PRIMARY KEY(guild, template, item_key)
         );
+        CREATE TABLE IF NOT EXISTS template_created_items(
+            guild INTEGER NOT NULL, template TEXT NOT NULL,
+            item_key TEXT NOT NULL, discord_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            PRIMARY KEY(guild, template, item_key)
+        );
         ''')
         self.db.commit()
     def run(self, sql, params=()):
