@@ -194,7 +194,8 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(channels)
         self.assertTrue(all(isinstance(ch.overwrites, dict) for ch in channels))
         public = next(ch for ch in channels if ch.name == "movie-chat")
-        self.assertEqual(public.overwrites, {})
+        self.assertIsInstance(public.overwrites, dict)
+        self.assertTrue(public.overwrites[self.guild.default_role].send_messages)
         readonly = next(ch for ch in channels if ch.name == "cinema-rules")
         self.assertIn(self.guild.default_role, readonly.overwrites)
 
