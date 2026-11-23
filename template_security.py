@@ -143,7 +143,7 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
                 if group["key"] == group_key:
                     expected_spec = next(
                         (item for item in group["channels"]
-                         if item["name"] == expected_name and item["kind"] == entry["kind"]),
+                         if item["name"] == legacy_name and item["kind"] == entry["kind"]),
                         None,
                     )
                     break
