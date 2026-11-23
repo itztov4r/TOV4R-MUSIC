@@ -1,5 +1,14 @@
 # TOV4R COMMUNITY
 
+## Ajouter le bot à n'importe quel serveur Discord
+
+**Lien d'invitation public :** https://discord.com/oauth2/authorize?client_id=1570489381624619198&scope=bot%20applications.commands
+
+Les administrateurs peuvent aussi utiliser **`/invite`** depuis un serveur où le bot est déjà présent. Le bot reste hébergé sur Railway; aucun nouveau token n'est nécessaire.
+
+Pour rendre l'installation disponible à tous, le propriétaire doit activer **Public Bot** et **Guild Install** dans le Discord Developer Portal. Détails dans [PUBLIC_INSTALL.md](PUBLIC_INSTALL.md). Les commandes sont synchronisées globalement; chaque serveur utilise sa propre configuration et lance **`/setup`** après installation. L'autopilot sans confirmation reste strictement réservé au serveur original (ID 1564283597173690380).
+
+
 Bot Discord complet pour votre communauté, inspiré du fonctionnement Join to Create d’Ariyana. Code indépendant, identité TOV4R, messages Darija / français. Pas de module musique.
 
 ## Démarrage Windows — Mehdi
