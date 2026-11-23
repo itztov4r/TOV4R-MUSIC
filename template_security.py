@@ -29,7 +29,7 @@ def policy_overwrites(guild: discord.Guild, kind: str,
     if kind == "voice":
         return {
             guild.default_role: discord.PermissionOverwrite(
-                view_channel=True, connect=True, speak=True, manage_channels=False,
+                view_channel=True, connect=True, speak=True,
             ),
             guild.me: discord.PermissionOverwrite(
                 view_channel=True, connect=True,
@@ -44,9 +44,6 @@ def policy_overwrites(guild: discord.Guild, kind: str,
             create_public_threads=False if readonly else None,
             create_private_threads=False if readonly else None,
             mention_everyone=False,
-            manage_channels=False,
-            manage_messages=False,
-            manage_webhooks=False,
         ),
         guild.me: discord.PermissionOverwrite(
             view_channel=True, read_message_history=True,
@@ -171,15 +168,15 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
                 continue
             try:
                 # A single message is enough to prevent deletion. Never purge history.
+                has_message = False
                 async for _ in channel.history(limit=1):
-                    result["skipped"].append(f"{expected_name}: has messages")
+                    has_message = True
                     break
-                else:
-                    pass
             except (discord.Forbidden, discord.HTTPException):
                 result["skipped"].append(f"{expected_name}: cannot verify history")
                 continue
-            if result["skipped"] and result["skipped"][-1] == f"{expected_name}: has messages":
+            if has_message:
+                result["skipped"].append(f"{expected_name}: has messages")
                 continue
 
         try:
