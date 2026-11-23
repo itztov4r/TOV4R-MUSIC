@@ -453,10 +453,13 @@ class Features(commands.Cog):
             '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
     @app_commands.guild_only()
     @app_commands.command(description='Auto-setup channels and roles based on your server type')
-    @app_commands.describe(type='Choose your server theme: Movies, Gaming, Music, Anime and more')
+    @app_commands.describe(
+        type='Choose your server theme: Movies, Gaming, Music, Anime and more',
+        cleanup='Also remove empty, untouched channels created by TOV4R from older themes',
+    )
     @app_commands.choices(type=TEMPLATE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self,i:discord.Interaction,type:str|None=None):
+    async def setup(self,i:discord.Interaction,type:str|None=None,cleanup:bool=False):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
             g=i.guild; cfg=self.bot.store.config(g.id)
@@ -489,7 +492,8 @@ class Features(commands.Cog):
                     c=await g.create_text_channel(name,overwrites={g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)})
                     await c.send(embed=embed('TOV4R • '+name,description),view=view)
             summary = await apply_template(
-                self.bot, g, chosen, panel_factory=RolePanel, safe_role_fn=safe_role
+                self.bot, g, chosen, panel_factory=RolePanel, safe_role_fn=safe_role,
+                cleanup=cleanup,
             )
             await self.bot.audit(g,'Setup',
                                  f'Server type {chosen} configured by {i.user.id}')
