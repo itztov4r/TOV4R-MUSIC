@@ -13,6 +13,11 @@ import server_templates as tpl
 from store import Store
 
 
+class FakeMember:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
 class FakeRole:
     def __init__(self, role_id, name, permissions):
         self.id = role_id
@@ -62,12 +67,12 @@ class FakeGuild:
         self.roles = []
         self.categories = []
         self.channels = {}
-        self.me = SimpleNamespace(
-            guild_permissions=SimpleNamespace(
+        self.me = FakeMember(
+            guild_permissions=FakeMember(
                 manage_channels=True, manage_roles=True, send_messages=True
             )
         )
-        self.default_role = SimpleNamespace(name="@everyone")
+        self.default_role = FakeMember(name="@everyone")
 
     def new_id(self):
         self._id += 1
