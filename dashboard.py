@@ -18,6 +18,7 @@ async def start_dashboard(bot):
             if request.method not in ('GET','HEAD') and request.content_type!='application/json': raise web.HTTPUnsupportedMediaType()
         try: response=await handler(request)
         except ValueError as e: response=web.json_response({'error':str(e)},status=400)
+        except web.HTTPException as e: response=e
         response.headers.update({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
              'Referrer-Policy':'no-referrer','Cache-Control':'no-store',
              'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"})
