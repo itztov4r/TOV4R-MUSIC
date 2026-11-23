@@ -310,7 +310,7 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
                     )
                     channel = await guild.create_text_channel(
                         spec["name"], category=category,
-                        topic=spec["topic"], overwrites=ow,
+                        topic=spec["topic"], overwrites=ow if ow is not None else {},
                         reason=f"TOV4R setup type {template_key}",
                     )
                 else:
