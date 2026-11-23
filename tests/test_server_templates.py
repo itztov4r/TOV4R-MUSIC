@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import discord
 import server_templates as tpl
+import focus_setup as focus
 from store import Store
 
 
@@ -36,6 +37,11 @@ class FakeCategory:
         self.name = name
         self.text_channels = []
         self.voice_channels = []
+        self.overwrites = {}
+
+    @property
+    def channels(self):
+        return self.text_channels + self.voice_channels
 
     async def edit(self, *, name, reason):
         self.name = name
@@ -52,14 +58,29 @@ class FakeText:
         self.messages = {}
         self.threads = []
         self.guild = guild
+        self.position = 0
+
+    def permissions_for(self, role):
+        ow = self.overwrites.get(role)
+        if ow is not None and ow.view_channel is not None:
+            return SimpleNamespace(view_channel=ow.view_channel)
+        return SimpleNamespace(view_channel=True)
 
     async def history(self, limit=1):
         for message in list(self.messages.values())[-limit:]:
             yield message
 
-    async def edit(self, *, overwrites=None, name=None, reason):
+    async def edit(self, *, overwrites=None, name=None, category=None,
+                   sync_permissions=False, position=None, reason):
         if overwrites is not None: self.overwrites = overwrites
         if name is not None: self.name = name
+        if category is not None and category is not self.category:
+            if self.category is not None:
+                self.category.text_channels.remove(self)
+            category.text_channels.append(self)
+            self.category = category
+            self.category_id = category.id
+        if position is not None: self.position = position
 
     async def delete(self, *, reason):
         self.category.text_channels.remove(self)
@@ -84,10 +105,25 @@ class FakeVoice:
         self.overwrites = overwrites
         self.members = []
         self.guild = guild
+        self.position = 0
 
-    async def edit(self, *, overwrites=None, name=None, reason):
+    def permissions_for(self, role):
+        ow = self.overwrites.get(role)
+        if ow is not None and ow.view_channel is not None:
+            return SimpleNamespace(view_channel=ow.view_channel)
+        return SimpleNamespace(view_channel=True)
+
+    async def edit(self, *, overwrites=None, name=None, category=None,
+                   sync_permissions=False, position=None, reason):
         if overwrites is not None: self.overwrites = overwrites
         if name is not None: self.name = name
+        if category is not None and category is not self.category:
+            if self.category is not None:
+                self.category.voice_channels.remove(self)
+            category.voice_channels.append(self)
+            self.category = category
+            self.category_id = category.id
+        if position is not None: self.position = position
 
     async def delete(self, *, reason):
         self.category.voice_channels.remove(self)
@@ -102,18 +138,26 @@ class FakeGuild:
         self.categories = []
         self.channels = {}
         self.me = FakeMember(
+            id=99999,
             guild_permissions=FakeMember(
                 manage_channels=True, manage_roles=True, send_messages=True
             )
         )
-        self.default_role = FakeMember(name="@everyone")
+        self.default_role = FakeRole(11111, "@everyone", discord.Permissions.none())
 
     def new_id(self):
         self._id += 1
         return self._id
 
     def get_role(self, role_id):
+        if role_id == self.default_role.id:
+            return self.default_role
         return next((r for r in self.roles if r.id == role_id), None)
+
+    def get_member(self, member_id):
+        if member_id == self.me.id:
+            return self.me
+        return None
 
     def get_channel(self, channel_id):
         return self.channels.get(channel_id)
@@ -123,8 +167,9 @@ class FakeGuild:
         self.roles.append(role)
         return role
 
-    async def create_category(self, name, *, reason):
+    async def create_category(self, name, *, reason, overwrites=None):
         category = FakeCategory(self.new_id(), name)
+        category.overwrites = overwrites or {}
         self.categories.append(category)
         self.channels[category.id] = category
         return category
@@ -314,6 +359,70 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ch.name, tpl.styled_channel_name("movie-chat","text"))
         self.assertIn("━━", category.name)
         self.assertEqual(again["channels_new"], [])
+
+    async def test_focus_hides_unrelated_channels_and_restores_permissions(self):
+        with patch.object(focus.discord, "Role", FakeRole):
+            await self.apply("movies")
+            custom_cat = await self.guild.create_category("Some Old Topic", reason="manual")
+            original_overwrites = {self.guild.default_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True)}
+            unrelated = await self.guild.create_text_channel(
+                "general-old", category=custom_cat, topic="personal history",
+                overwrites=original_overwrites, reason="manual")
+            # This content must survive being hidden.
+            await unrelated.send(embed=discord.Embed(title="Keep this!"))
+            baseline_messages = dict(unrelated.messages)
+            active_movie = next(ch for ch in self.guild.channels.values()
+                                if isinstance(ch, FakeText)
+                                and ch.name == tpl.styled_channel_name("movie-chat","text"))
+            report = await focus.focus_server(self.bot, self.guild, "movies")
+            self.assertIn("general-old", report["archived"])
+            self.assertNotIn(active_movie.name, report["archived"])
+            self.assertEqual(unrelated.overwrites[self.guild.default_role].view_channel, False)
+            self.assertEqual(unrelated.messages, baseline_messages)
+            self.assertNotEqual(unrelated.category_id, custom_cat.id)
+            self.assertEqual(len(self.store.all("SELECT * FROM focused_archives")), 1)
+            # A second run must not add more archived records.
+            again = await focus.focus_server(self.bot, self.guild, "movies")
+            self.assertEqual(again["archived"], [])
+            restore = await focus.restore_server(self.bot, self.guild)
+            self.assertIn("general-old", restore["restored"])
+            self.assertEqual(unrelated.category_id, custom_cat.id)
+            self.assertEqual(unrelated.overwrites, original_overwrites)
+            self.assertEqual(unrelated.messages, baseline_messages)
+
+    async def test_focus_protects_important_channels_and_active_voice(self):
+        with patch.object(focus.discord, "Role", FakeRole):
+            await self.apply("gaming")
+            cat = await self.guild.create_category("Misc", reason="manual")
+            staff = await self.guild.create_text_channel(
+                "staff-chat", category=cat, topic="private",
+                overwrites={self.guild.default_role:
+                            discord.PermissionOverwrite(view_channel=False)}, reason="manual")
+            active = await self.guild.create_voice_channel(
+                "Active Voice", category=cat, overwrites={}, reason="manual")
+            active.members.append(FakeMember(id=9876))
+            result = await focus.focus_server(self.bot, self.guild, "gaming")
+            self.assertNotIn(staff.name, result["archived"])
+            self.assertNotIn(active.name, result["archived"])
+            self.assertEqual(staff.category_id, cat.id)
+            self.assertEqual(active.category_id, cat.id)
+
+    async def test_switch_back_restores_previously_focused_template(self):
+        with patch.object(focus.discord, "Role", FakeRole):
+            await self.apply("movies")
+            await self.apply("gaming")
+            focus_result = await focus.focus_server(self.bot, self.guild, "gaming")
+            self.assertIn(tpl.styled_channel_name("movie-chat","text"), focus_result["archived"])
+            restored = await focus.restore_active_template(self.bot, self.guild, "movies")
+            self.assertIn(tpl.styled_channel_name("movie-chat","text"), restored["restored"])
+            self.assertFalse(any(
+                item["channel_id"] == next(
+                    ch.id for ch in self.guild.channels.values()
+                    if isinstance(ch, FakeText) and
+                    ch.name == tpl.styled_channel_name("movie-chat","text"))
+                for item in self.store.all("SELECT * FROM focused_archives")
+            ))
 
     def test_all_template_definitions_are_unique_and_safe(self):
         self.assertGreaterEqual(len(tpl.TEMPLATES), 9)
