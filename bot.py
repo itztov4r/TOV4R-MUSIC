@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 from store import Store, level
 from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
 from focus_setup import focus_server, restore_server, restore_active_template
+from setup_service import provision_server
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -464,48 +465,21 @@ class Features(commands.Cog):
     async def setup(self,i:discord.Interaction,type:str|None=None,cleanup:bool=False,focus:bool=False):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            g=i.guild; cfg=self.bot.store.config(g.id)
-            chosen = type or cfg.get('server_type', 'community')
-            if chosen not in TEMPLATES: raise ValueError('Server type machi valid.')
-            async def category(key,name,private=False):
-                c=g.get_channel(cfg[key])
-                if not isinstance(c,discord.CategoryChannel):
-                    ow={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,manage_channels=True)} if private else {}
-                    c=await g.create_category(name,overwrites=ow)
-                    cfg[key]=c.id; self.bot.store.update(g.id,{key:c.id})
-                return c
-            voice=await category('voice_category','TOV4R • VOICE')
-            await category('ticket_category','TOV4R • SUPPORT',True)
-            role=g.get_role(cfg['support_role'])
-            if not role:
-                role=await g.create_role(name='TOV4R Support',colour=discord.Colour(COLOR),reason='TOV4R setup')
-                cfg['support_role']=role.id; self.bot.store.update(g.id,{'support_role':role.id})
-            if not g.get_channel(cfg['voice_creator']):
-                c=await g.create_voice_channel('➕ Create your room',category=voice)
-                cfg['voice_creator']=c.id; self.bot.store.update(g.id,{'voice_creator':c.id})
-            for key,name in [('welcome_channel','welcome'),('logs_channel','tov4r-logs')]:
-                if not g.get_channel(cfg[key]):
-                    ow={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True),role:discord.PermissionOverwrite(view_channel=True)} if key=='logs_channel' else {g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)}
-                    c=await g.create_text_channel(name,overwrites=ow)
-                    cfg[key]=c.id; self.bot.store.update(g.id,{key:c.id})
-            for name,view,description in [('voice-panel',VoicePanel(self.bot),'Dkhel l **➕ Create your room**, men ba3d control room dyalek hna.'),('tickets',TicketPanel(self.bot),'Support / report / request. Click Open ticket.')]:
-                c=discord.utils.get(g.text_channels,name=name)
-                if not c:
-                    c=await g.create_text_channel(name,overwrites={g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)})
-                    await c.send(embed=embed('TOV4R • '+name,description),view=view)
-            # A template selected after an earlier Focus run must reappear
-            # before provisioning, otherwise it would stay inside the archive.
-            restored = await restore_active_template(self.bot, g, chosen)
-            summary = await apply_template(
-                self.bot, g, chosen, panel_factory=RolePanel, safe_role_fn=safe_role,
-                cleanup=cleanup,
+            chosen = type or self.bot.store.config(i.guild_id).get('server_type','community')
+            summary = await provision_server(
+                self.bot, i.guild, chosen,
+                voice_panel_factory=VoicePanel, ticket_panel_factory=TicketPanel,
+                role_panel_factory=RolePanel, safe_role_fn=safe_role,
+                embed_factory=embed, focus=focus, cleanup=cleanup
             )
-            if focus:
-                summary['focus'] = await focus_server(self.bot, g, chosen)
-            summary['previously_restored'] = restored
-            await self.bot.audit(g,'Setup',
-                                 f'Server type {chosen}, focused={focus}, configured by {i.user.id}')
-            await reply(i,format_result(summary))
+            await self.bot.audit(i.guild,'Setup',
+                                 f'Server type {chosen}, focus={focus}, by {i.user.id}')
+            msg = format_result(summary)
+            if summary.get('focus'):
+                msg += (f"\n🔒 Archived: **{len(summary['focus']['archived'])}**"
+                        f" • Remaining: **{summary['focus']['remaining']}**"
+                        "\nUse /restore_layout to undo archive.")
+            await reply(i,msg)
     @app_commands.guild_only()
     @app_commands.command(description='Restore channels hidden by focused server setup')
     @app_commands.checks.has_permissions(manage_guild=True)

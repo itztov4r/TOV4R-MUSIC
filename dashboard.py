@@ -12,12 +12,13 @@ async def start_dashboard(bot):
         return None
     @web.middleware
     async def security(request,handler):
-        if request.path.startswith('/api/'):
+        if request.path.startswith('/api/') and not request.path.startswith('/api/v2/'):
             supplied=request.headers.get('Authorization','')
             if not hmac.compare_digest(supplied,'Bearer '+key): raise web.HTTPUnauthorized()
             if request.method not in ('GET','HEAD') and request.content_type!='application/json': raise web.HTTPUnsupportedMediaType()
         try: response=await handler(request)
         except ValueError as e: response=web.json_response({'error':str(e)},status=400)
+        except web.HTTPException as e: response=e
         response.headers.update({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
              'Referrer-Policy':'no-referrer','Cache-Control':'no-store',
              'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"})
@@ -63,6 +64,8 @@ async def start_dashboard(bot):
         return web.json_response({'ok':True})
     app.router.add_get('/',index); app.router.add_get('/assets/{name}',asset)
     app.router.add_get('/api/state',state); app.router.add_put('/api/guild/{guild}',update)
+    from web_dashboard_v2 import add_dashboard_v2
+    add_dashboard_v2(app, bot)
     runner=web.AppRunner(app); await runner.setup()
     host=os.getenv('DASHBOARD_HOST','127.0.0.1'); port=int(os.getenv('PORT','8080'))
     await web.TCPSite(runner,host,port).start()

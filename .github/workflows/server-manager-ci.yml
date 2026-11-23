@@ -18,9 +18,15 @@ jobs:
       - name: Install existing bot dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile Python source without starting bot
-        run: python -m compileall -q bot.py server_manager.py autopilot.py voice_commands.py store.py dashboard.py server_templates.py template_security.py focus_setup.py tests/test_server_templates.py
+        run: python -m compileall -q bot.py server_manager.py autopilot.py voice_commands.py store.py dashboard.py web_dashboard_v2.py setup_service.py server_templates.py template_security.py focus_setup.py tests/test_server_templates.py tests/test_web_wizard.py
       - name: Test themed setup and idempotence without Discord login
         run: python -m unittest discover -s tests -p 'test_server_templates.py' -v
+      - name: Test secure web wizard API and guild isolation
+        run: python -m unittest discover -s tests -p 'test_web_wizard.py' -v
+      - name: Validate browser JavaScript syntax
+        run: |
+          node --check web/wizard.js
+          node --check web/app.js
       - name: Import and validate new command group
         run: |
           python - <<'PY'

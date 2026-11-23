@@ -1,5 +1,14 @@
 # TOV4R COMMUNITY
 
+## 🌐 TOV4R Server Studio V4 — Dashboard Web + Setup Wizard
+
+La nouvelle interface **/wizard** ajoute une connexion Discord OAuth2 par serveur, un tableau de bord responsive, un sélecteur de 9 Templates premium et un **Preview obligatoire avant Apply**. Les administrateurs ne peuvent gérer que les serveurs sur lesquels ils ont **Manage Server**. La page existante `/` reste disponible pour le propriétaire avec sa clé privée.
+
+Le wizard peut lancer Focus Mode réversible (archivage privé, **sans suppression**) et propose XP, AntiSpam, AntiInvites, Welcome et Restore. Son moteur `provision_server` est aussi utilisé par la commande Discord `/setup`; aucun ancien channel, rôle, message ou réglage SQLite n'est effacé au déploiement.
+
+**Activation OAuth et URL HTTPS Railway :** [DASHBOARD_WEB.md](DASHBOARD_WEB.md). Le propriétaire doit définir `DASHBOARD_BASE_URL`, enregistrer `/auth/callback` dans le Discord Developer Portal et placer `DISCORD_OAUTH_CLIENT_SECRET` dans les variables privées Railway. Les identifiants ne vont jamais dans GitHub.
+
+
 ## Ajouter le bot à n'importe quel serveur Discord
 
 **Lien d'invitation public :** https://discord.com/oauth2/authorize?client_id=1570489381624619198&scope=bot%20applications.commands
