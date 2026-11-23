@@ -13,6 +13,22 @@ Every selected template now uses a coherent premium appearance:
 - Re-running `/setup` restyles existing bot-tracked plain template names, but does **not** rename manually customized names or delete resources.
 - This update **does not include a server-wide archive, broad channel cleanup, or bulk delete**. The older optional `cleanup:true` remains narrowly limited to verified empty bot-owned channels when separately selected.
 
+## Focus Mode — serve only the selected type
+
+Run `/setup type: 🎬 Movies & Cinema focus: true` (or another type) to build the themed categories, emoji channels and safe interest roles and then **hide unrelated public text/voice channels in private, recoverable archive categories**.
+
+- Focus is **OFF by default**. It never runs automatically on bot deployment or on bot invitation.
+- Only an authorized admin with **Manage Server** can initiate it; the bot must have **Manage Channels**.
+- Focus hides only unrelated public text or inactive voice channels, keeping their messages, IDs, attachments, topics and original role/member permission overwrites in persistent SQLite storage.
+- Admin/staff private channels, logs, bot tickets, current voice creator rooms, active voice members, and special Discord system channels are excluded.
+- Up to 35 channels are archived per run to avoid timeouts and Discord rate limits. Run again if the summary reports remaining channels.
+- Existing roles and every user-created message are preserved, including roles from earlier server types. Discord server admins can still see the archive.
+- `/restore_layout` brings archived channels back to their previous categories and permissions in batches.
+- Switching back to a previously generated type automatically restores its archived template channels before setup. No bulk deletion is performed.
+- No hidden background tasks, mass role removal, silent destructive purges or arbitrary server edits happen during a normal `/setup`.
+
+**Example:** `/setup type: Gaming focus: true`. The public server then centers on the Gaming theme, while off-theme channels remain safely stored in admin-visible `🔒・TOV4R ARCHIVE` categories.
+
 ## Types in the dropdown
 
 | Type | Example channels | Example roles |
