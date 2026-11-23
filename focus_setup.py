@@ -14,7 +14,7 @@ import discord
 
 LOG = logging.getLogger("tov4r.focus")
 ARCHIVE_PREFIX = "🔒・TOV4R ARCHIVE"
-LIMIT = 35
+LIMIT = 75
 ARCHIVE_MAX_CHANNELS = 40
 
 
