@@ -16,6 +16,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 from store import Store, level
+from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -432,7 +433,7 @@ class Features(commands.Cog):
         await i.response.send_message(embed=embed('TOV4R • Command center',
             '**Members**\n/help · /invite · /rank · /leaderboard · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup · /configure · /panels · /rolepanel · /announce\n'
+            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels\n/rolepanel · /announce\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
@@ -440,12 +441,16 @@ class Features(commands.Cog):
             '/server private_channel (admin confirmation before edits)\n'
             '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
     @app_commands.guild_only()
-    @app_commands.command(description='Create or repair TOV4R community channels and panels')
+    @app_commands.command(description='Auto-setup channels and roles based on your server type')
+    @app_commands.describe(type='Choose your server theme: Movies, Gaming, Music, Anime and more')
+    @app_commands.choices(type=TEMPLATE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self,i:discord.Interaction):
+    async def setup(self,i:discord.Interaction,type:str|None=None):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
             g=i.guild; cfg=self.bot.store.config(g.id)
+            chosen = type or cfg.get('server_type', 'community')
+            if chosen not in TEMPLATES: raise ValueError('Server type machi valid.')
             async def category(key,name,private=False):
                 c=g.get_channel(cfg[key])
                 if not isinstance(c,discord.CategoryChannel):
@@ -472,8 +477,12 @@ class Features(commands.Cog):
                 if not c:
                     c=await g.create_text_channel(name,overwrites={g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)})
                     await c.send(embed=embed('TOV4R • '+name,description),view=view)
-            await self.bot.audit(g,'Setup','Community configured by '+str(i.user.id))
-            await reply(i,'Setup wajd ✅ 3ti role TOV4R Support l staff. /configure bach tbedel settings, /panels bach t3awed tsift panel ila tmsa7.')
+            summary = await apply_template(
+                self.bot, g, chosen, panel_factory=RolePanel, safe_role_fn=safe_role
+            )
+            await self.bot.audit(g,'Setup',
+                                 f'Server type {chosen} configured by {i.user.id}')
+            await reply(i,format_result(summary))
     @app_commands.guild_only()
     @app_commands.command(description='Set channels, support role and optional safe auto-role')
     @app_commands.checks.has_permissions(manage_guild=True)
