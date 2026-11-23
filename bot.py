@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 from store import Store, level
 from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
+from focus_setup import focus_server, restore_server, restore_active_template
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -456,10 +457,11 @@ class Features(commands.Cog):
     @app_commands.describe(
         type='Choose your server theme: Movies, Gaming, Music, Anime and more',
         cleanup='Also remove empty, untouched channels created by TOV4R from older themes',
+        focus='Show only this type publicly; privately archive unrelated channels (reversible)',
     )
     @app_commands.choices(type=TEMPLATE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self,i:discord.Interaction,type:str|None=None,cleanup:bool=False):
+    async def setup(self,i:discord.Interaction,type:str|None=None,cleanup:bool=False,focus:bool=False):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
             g=i.guild; cfg=self.bot.store.config(g.id)
@@ -491,13 +493,33 @@ class Features(commands.Cog):
                 if not c:
                     c=await g.create_text_channel(name,overwrites={g.default_role:discord.PermissionOverwrite(send_messages=False),g.me:discord.PermissionOverwrite(send_messages=True)})
                     await c.send(embed=embed('TOV4R • '+name,description),view=view)
+            # A template selected after an earlier Focus run must reappear
+            # before provisioning, otherwise it would stay inside the archive.
+            restored = await restore_active_template(self.bot, g, chosen)
             summary = await apply_template(
                 self.bot, g, chosen, panel_factory=RolePanel, safe_role_fn=safe_role,
                 cleanup=cleanup,
             )
+            if focus:
+                summary['focus'] = await focus_server(self.bot, g, chosen)
+            summary['previously_restored'] = restored
             await self.bot.audit(g,'Setup',
-                                 f'Server type {chosen} configured by {i.user.id}')
+                                 f'Server type {chosen}, focused={focus}, configured by {i.user.id}')
             await reply(i,format_result(summary))
+    @app_commands.guild_only()
+    @app_commands.command(description='Restore channels hidden by focused server setup')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def restore_layout(self,i:discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('setup',i.guild_id)]:
+            status = await restore_server(self.bot, i.guild)
+            await reply(i,(
+                f"✅ Archived channels restored: **{len(status['restored'])}**\\n"
+                f"⏳ Remaining: **{status['remaining']}**\\n"
+                f"⚠️ Skipped: **{len(status['skipped'])}**. "
+                "No messages or roles were deleted."
+            ).replace('\\\\n','\\n'))
+
     @app_commands.guild_only()
     @app_commands.command(description='Set channels, support role and optional safe auto-role')
     @app_commands.checks.has_permissions(manage_guild=True)
