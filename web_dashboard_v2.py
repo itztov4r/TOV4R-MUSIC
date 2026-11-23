@@ -278,10 +278,15 @@ class DashboardV2:
         })
 
     @staticmethod
+    def _channels(guild):
+        channels = guild.channels
+        return list(channels.values()) if isinstance(channels, dict) else list(channels)
+
+    @staticmethod
     def _fingerprint(guild):
         data = sorted(
             (str(c.id), c.name, str(c.type), str(getattr(c, "category_id", None)))
-            for c in guild.channels
+            for c in DashboardV2._channels(guild)
         )
         roles = sorted((str(r.id), r.name) for r in guild.roles)
         return hashlib.sha256(
@@ -311,7 +316,7 @@ class DashboardV2:
                 display = styled_channel_name(ch["name"], ch["kind"])
                 found = known_ch is not None or any(
                     c.name in (display, ch["name"])
-                    for c in guild.channels if getattr(c, "category_id", None)
+                    for c in self._channels(guild) if getattr(c, "category_id", None)
                     == (known.id if isinstance(known, discord.CategoryChannel) else None)
                 )
                 if not found:
@@ -371,8 +376,8 @@ class DashboardV2:
         principal, guild = await self._guild(request, write=True)
         data = await self._json(request)
         plan_id = data.get("plan_id")
-        if not isinstance(plan_id, str):
-            raise web.HTTPBadRequest(text="Plan required")
+        if not isinstance(plan_id, str) or len(plan_id) > 128:
+            raise web.HTTPBadRequest(text="Valid plan required")
         plan = self.plans.pop(plan_id, None)
         if not plan or plan["at"] + PLAN_SECONDS < time.time():
             raise web.HTTPConflict(text="Preview expired; generate it again")
