@@ -20,7 +20,7 @@ from discord.ext import commands
 from server_manager import snapshot, privileged_permissions, secret
 
 LOG = logging.getLogger("tov4r.autopilot")
-TARGET_NAME = "1729"
+TARGET_GUILD_ID = 1564283597173690380  # Audited production server 1729; never name-match
 # Exact role names intended for normal members (not staff or administrator).
 BASIC_ROLE_NAMES = frozenset({
     "member", "members", "verified", "unverified", "new member",
@@ -74,7 +74,7 @@ class ServerAutopilot(commands.GroupCog, group_name="autopilot",
     def start_for(self, guild: discord.Guild):
         # This feature is explicitly limited to one named target, not every
         # server that might later add the public TOV4R Bot.
-        if guild.name.casefold().strip() != TARGET_NAME:
+        if guild.id != TARGET_GUILD_ID:
             LOG.info("Autopilot skip other guild id=%s name=%r", guild.id, guild.name)
             return
         if guild.id in self.started:
@@ -210,7 +210,7 @@ class ServerAutopilot(commands.GroupCog, group_name="autopilot",
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def automatic_report(self, interaction: discord.Interaction):
-        if interaction.guild.name.casefold().strip() != TARGET_NAME:
+        if interaction.guild_id != TARGET_GUILD_ID:
             return await secret(interaction, "Autopilot only targets server 1729.")
         path = self.last_report.get(interaction.guild_id)
         if path is None:
