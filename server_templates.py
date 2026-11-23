@@ -300,8 +300,12 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
             if not isinstance(channel, expected):
                 if spec["kind"] == "text":
                     ow = (
-                        {guild.default_role: discord.PermissionOverwrite(
-                            send_messages=False, send_messages_in_threads=False)}
+                        {
+                            guild.default_role: discord.PermissionOverwrite(
+                                send_messages=False, send_messages_in_threads=False),
+                            me: discord.PermissionOverwrite(
+                                view_channel=True, send_messages=True, embed_links=True),
+                        }
                         if spec["readonly"] else None
                     )
                     channel = await guild.create_text_channel(
