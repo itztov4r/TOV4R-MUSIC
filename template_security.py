@@ -162,7 +162,18 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
             if channel.members:
                 result["skipped"].append(f"{expected_name}: members connected")
                 continue
+            # Customized voice settings imply the owner may still use the room.
+            if (
+                getattr(channel, "user_limit", 0) != 0
+                or getattr(channel, "rtc_region", None) is not None
+                or getattr(channel, "bitrate", 64000) != 64000
+            ):
+                result["skipped"].append(f"{expected_name}: customized voice settings")
+                continue
         else:
+            if channel.topic != expected_spec.get("topic"):
+                result["skipped"].append(f"{expected_name}: customized topic")
+                continue
             if channel.threads:
                 result["skipped"].append(f"{expected_name}: contains threads")
                 continue
