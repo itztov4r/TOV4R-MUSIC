@@ -58,6 +58,20 @@ class Store:
             item_key TEXT NOT NULL, discord_id INTEGER NOT NULL, kind TEXT NOT NULL,
             PRIMARY KEY(guild, template, item_key)
         );
+        CREATE TABLE IF NOT EXISTS focused_archive_bins(
+            guild INTEGER NOT NULL, idx INTEGER NOT NULL, category_id INTEGER NOT NULL,
+            PRIMARY KEY(guild, idx)
+        );
+        CREATE TABLE IF NOT EXISTS focused_archives(
+            guild INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            previous_category_id INTEGER NOT NULL,
+            previous_position INTEGER NOT NULL,
+            previous_overwrites TEXT NOT NULL,
+            archive_category_id INTEGER NOT NULL,
+            archived_at REAL NOT NULL,
+            PRIMARY KEY(guild, channel_id)
+        );
         ''')
         self.db.commit()
     def run(self, sql, params=()):
