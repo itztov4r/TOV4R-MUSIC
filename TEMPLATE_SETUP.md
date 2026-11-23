@@ -2,6 +2,17 @@
 
 A Discord server administrator can now type **`/setup`**, select **`type`** in the Discord slash-command options, then choose the theme. The bot creates the required categories, text channels, voice rooms, cosmetic interest roles and a persistent self-assignable role panel.
 
+## Premium emoji styling
+
+Every selected template now uses a coherent premium appearance:
+
+- Ornamental category labels, e.g. `╭━━ 🎬・CINEMA ┃ DISCUSS ━━╮`.
+- Text channels with topic-specific native Unicode emojis, e.g. `💬・movie-chat`, `⭐・movie-reviews`, `🚨・movie-spoilers`.
+- Matching voice labels like `🍿・Watch Party` and styled member roles like `🎬・Movie Fan`.
+- Theme-specific role color, existing starter rules, buttons for `🎭・choose-roles`, and original security permissions.
+- Re-running `/setup` restyles existing bot-tracked plain template names, but does **not** rename manually customized names or delete resources.
+- This update **does not include a server-wide archive, broad channel cleanup, or bulk delete**. The older optional `cleanup:true` remains narrowly limited to verified empty bot-owned channels when separately selected.
+
 ## Types in the dropdown
 
 | Type | Example channels | Example roles |

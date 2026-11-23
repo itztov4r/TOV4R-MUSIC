@@ -105,7 +105,10 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
         if entry["kind"] not in {"text", "voice"}:
             continue
         old_key = entry["template"]
-        expected_name = entry["item_key"].split(":", 2)[-1]
+        legacy_name = entry["item_key"].split(":", 2)[-1]
+        # Imported only inside the function to avoid module import cycles.
+        from server_templates import styled_channel_name
+        expected_name = styled_channel_name(legacy_name, entry["kind"])
         cid = int(entry["discord_id"])
         channel = guild.get_channel(cid)
         if channel is None:
@@ -118,7 +121,7 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
             result["skipped"].append(f"{expected_name}: protected core channel")
             continue
         expected_type = discord.TextChannel if entry["kind"] == "text" else discord.VoiceChannel
-        if not isinstance(channel, expected_type) or channel.name != expected_name:
+        if not isinstance(channel, expected_type) or channel.name not in {expected_name, legacy_name}:
             result["skipped"].append(f"{expected_name}: edited name/type")
             continue
 
@@ -140,7 +143,7 @@ async def clean_extra_channels(bot, guild: discord.Guild, chosen: str,
                 if group["key"] == group_key:
                     expected_spec = next(
                         (item for item in group["channels"]
-                         if item["name"] == expected_name and item["kind"] == entry["kind"]),
+                         if item["name"] == legacy_name and item["kind"] == entry["kind"]),
                         None,
                     )
                     break
