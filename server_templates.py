@@ -339,7 +339,7 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
                 colour=discord.Colour(plan["color"]), mentionable=False,
                 reason=f"TOV4R setup type {template_key}: safe member permissions",
             )
-            result["roles_new"].append(name)
+            result["roles_new"].append(role.name)
             track_created(bot, guild.id, template_key, key, role, "role")
         else:
             result["reused"] += 1
