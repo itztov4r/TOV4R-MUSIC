@@ -25,8 +25,9 @@ class FakeRole:
         self.permissions = permissions
         self.managed = False
 
-    async def edit(self, *, permissions, reason):
-        self.permissions = permissions
+    async def edit(self, *, permissions=None, name=None, reason):
+        if permissions is not None: self.permissions = permissions
+        if name is not None: self.name = name
 
 
 class FakeCategory:
@@ -35,6 +36,9 @@ class FakeCategory:
         self.name = name
         self.text_channels = []
         self.voice_channels = []
+
+    async def edit(self, *, name, reason):
+        self.name = name
 
 
 class FakeText:
@@ -53,8 +57,9 @@ class FakeText:
         for message in list(self.messages.values())[-limit:]:
             yield message
 
-    async def edit(self, *, overwrites, reason):
-        self.overwrites = overwrites
+    async def edit(self, *, overwrites=None, name=None, reason):
+        if overwrites is not None: self.overwrites = overwrites
+        if name is not None: self.name = name
 
     async def delete(self, *, reason):
         self.category.text_channels.remove(self)
@@ -80,8 +85,9 @@ class FakeVoice:
         self.members = []
         self.guild = guild
 
-    async def edit(self, *, overwrites, reason):
-        self.overwrites = overwrites
+    async def edit(self, *, overwrites=None, name=None, reason):
+        if overwrites is not None: self.overwrites = overwrites
+        if name is not None: self.name = name
 
     async def delete(self, *, reason):
         self.category.voice_channels.remove(self)
@@ -176,12 +182,12 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not role.permissions.administrator for role in self.guild.roles))
         self.assertTrue(all(not role.permissions.manage_roles for role in self.guild.roles))
         self.assertTrue(all(role.permissions.send_messages for role in self.guild.roles))
-        self.assertIn("movie-reviews", [ch.name for ch in self.guild.channels.values()])
-        self.assertIn("movie-spoilers", [ch.name for ch in self.guild.channels.values()])
-        self.assertIn("🍿 Watch Party", [ch.name for ch in self.guild.channels.values()])
+        self.assertIn(tpl.styled_channel_name("movie-reviews", "text"), [ch.name for ch in self.guild.channels.values()])
+        self.assertIn(tpl.styled_channel_name("movie-spoilers", "text"), [ch.name for ch in self.guild.channels.values()])
+        self.assertIn(tpl.styled_channel_name("🍿 Watch Party", "voice"), [ch.name for ch in self.guild.channels.values()])
         panels = self.store.all("SELECT * FROM role_panels WHERE guild=?", (self.guild.id,))
         self.assertEqual(len(panels), 1)
-        rules = next(ch for ch in self.guild.channels.values() if ch.name == "cinema-rules")
+        rules = next(ch for ch in self.guild.channels.values() if ch.name == tpl.styled_channel_name("cinema-rules", "text"))
         self.assertEqual(len(rules.messages), 1)
         self.assertIn(self.guild.me, rules.overwrites)
         self.assertTrue(rules.overwrites[self.guild.me].send_messages)
@@ -193,10 +199,10 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
                     if isinstance(ch, FakeText)]
         self.assertTrue(channels)
         self.assertTrue(all(isinstance(ch.overwrites, dict) for ch in channels))
-        public = next(ch for ch in channels if ch.name == "movie-chat")
+        public = next(ch for ch in channels if ch.name == tpl.styled_channel_name("movie-chat", "text"))
         self.assertIsInstance(public.overwrites, dict)
         self.assertTrue(public.overwrites[self.guild.default_role].send_messages)
-        readonly = next(ch for ch in channels if ch.name == "cinema-rules")
+        readonly = next(ch for ch in channels if ch.name == tpl.styled_channel_name("cinema-rules", "text"))
         self.assertIn(self.guild.default_role, readonly.overwrites)
 
     async def test_repeated_setup_does_not_duplicate_items_or_messages(self):
@@ -230,13 +236,13 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
     async def test_public_text_and_voice_permissions(self):
         await self.apply("movies")
         public = next(ch for ch in self.guild.channels.values()
-                      if isinstance(ch, FakeText) and ch.name == "movie-chat")
+                      if isinstance(ch, FakeText) and ch.name == tpl.styled_channel_name("movie-chat", "text"))
         choose = next(ch for ch in self.guild.channels.values()
-                      if isinstance(ch, FakeText) and ch.name == "choose-roles")
+                      if isinstance(ch, FakeText) and ch.name == tpl.styled_channel_name("choose-roles", "text"))
         rule = next(ch for ch in self.guild.channels.values()
-                    if isinstance(ch, FakeText) and ch.name == "cinema-rules")
+                    if isinstance(ch, FakeText) and ch.name == tpl.styled_channel_name("cinema-rules", "text"))
         voice = next(ch for ch in self.guild.channels.values()
-                     if isinstance(ch, FakeVoice) and ch.name == "🍿 Watch Party")
+                     if isinstance(ch, FakeVoice) and ch.name == tpl.styled_channel_name("🍿 Watch Party", "voice"))
         everyone = self.guild.default_role
         self.assertTrue(public.overwrites[everyone].send_messages)
         self.assertTrue(public.overwrites[everyone].view_channel)
@@ -249,25 +255,25 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         await self.apply("gaming")
         clean = await self.apply("gaming", cleanup=True)
         self.assertIsNotNone(clean["cleanup"])
-        self.assertIn("movie-chat", clean["cleanup"]["deleted"])
-        self.assertIn("🍿 Watch Party", clean["cleanup"]["deleted"])
+        self.assertIn(tpl.styled_channel_name("movie-chat","text"), clean["cleanup"]["deleted"])
+        self.assertIn(tpl.styled_channel_name("🍿 Watch Party","voice"), clean["cleanup"]["deleted"])
         remaining = [ch.name for ch in self.guild.channels.values()]
-        self.assertNotIn("movie-chat", remaining)
-        self.assertNotIn("🍿 Watch Party", remaining)
+        self.assertNotIn(tpl.styled_channel_name("movie-chat","text"), remaining)
+        self.assertNotIn(tpl.styled_channel_name("🍿 Watch Party","voice"), remaining)
         # Rules and role panel contain bot messages: NEVER delete them.
-        self.assertIn("cinema-rules", remaining)
-        self.assertIn("choose-roles", remaining)
+        self.assertIn(tpl.styled_channel_name("cinema-rules","text"), remaining)
+        self.assertIn(tpl.styled_channel_name("choose-roles","text"), remaining)
         # Active gaming template is untouched.
-        self.assertIn("game-chat", remaining)
+        self.assertIn(tpl.styled_channel_name("game-chat","text"), remaining)
 
     async def test_cleanup_respects_modified_permissions_and_other_messages(self):
         await self.apply("movies")
         channel = next(ch for ch in self.guild.channels.values()
-                       if isinstance(ch, FakeText) and ch.name == "movie-chat")
+                       if isinstance(ch, FakeText) and ch.name == tpl.styled_channel_name("movie-chat", "text"))
         channel.overwrites = {}  # User customized: no longer equals template policy.
         await self.apply("gaming")
         clean = await self.apply("gaming", cleanup=True)
-        self.assertNotIn("movie-chat", clean["cleanup"]["deleted"])
+        self.assertNotIn(tpl.styled_channel_name("movie-chat","text"), clean["cleanup"]["deleted"])
         self.assertIn(channel.id, self.guild.channels)
 
     async def test_cleanup_never_deletes_preexisting_channels_or_roles(self):
@@ -281,6 +287,33 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         await self.apply("gaming", cleanup=True)
         self.assertIn(channel.id, self.guild.channels)
         self.assertTrue(all(role in self.guild.roles for role in self.guild.roles))
+
+    async def test_premium_names_are_consistent_and_idempotent(self):
+        result = await self.apply("movies")
+        self.assertTrue(result["categories_new"])
+        self.assertTrue(all("━━" in name for name in result["categories_new"]))
+        self.assertTrue(all("・" in name for name in result["channels_new"]))
+        self.assertTrue(all("・" in name for name in result["roles_new"]))
+        ids = set(self.guild.channels)
+        again = await self.apply("movies")
+        self.assertEqual(set(self.guild.channels), ids)
+        self.assertEqual(again["channels_new"], [])
+        self.assertEqual(again["roles_new"], [])
+
+    async def test_legacy_tracked_names_upgrade_without_duplicate(self):
+        await self.apply("movies")
+        ch = next(ch for ch in self.guild.channels.values()
+                  if isinstance(ch, FakeText) and ch.name == tpl.styled_channel_name("movie-chat", "text"))
+        original_id = ch.id
+        ch.name = "movie-chat"
+        category = next(cat for cat in self.guild.categories
+                        if "CINEMA" in cat.name and "DISCUSS" in cat.name)
+        category.name = "🎥・CINEMA | DISCUSS"
+        again = await self.apply("movies")
+        self.assertEqual(ch.id, original_id)
+        self.assertEqual(ch.name, tpl.styled_channel_name("movie-chat","text"))
+        self.assertIn("━━", category.name)
+        self.assertEqual(again["channels_new"], [])
 
     def test_all_template_definitions_are_unique_and_safe(self):
         self.assertGreaterEqual(len(tpl.TEMPLATES), 9)
