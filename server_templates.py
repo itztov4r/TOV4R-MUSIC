@@ -207,6 +207,70 @@ TEMPLATES = {
     ),
 }
 
+# Consistent premium styling for all nine layouts. These names are calculated
+# from the original template keys, so database IDs and self-role panels stay
+# stable even when the visible Discord labels are updated.
+CHANNEL_EMOJI = (
+    (("rules",), "📜"),
+    (("announcements", "news"), "📢"),
+    (("choose-roles",), "🎭"),
+    (("spoilers",), "🚨"),
+    (("reviews",), "⭐"),
+    (("recommendations",), "💡"),
+    (("watch-parties", "watch-events"), "🍿"),
+    (("polls", "predictions"), "🗳️"),
+    (("looking-for-group",), "🔎"),
+    (("clips", "highlights"), "🎬"),
+    (("setups", "hardware"), "🖥️"),
+    (("tournaments",), "🏆"),
+    (("photos", "media"), "📸"),
+    (("memes",), "😂"),
+    (("introductions",), "👋"),
+    (("suggestions",), "💡"),
+    (("resources", "notes"), "📚"),
+    (("homework", "study-plans"), "📖"),
+    (("programming", "coding"), "💻"),
+    (("project", "creations"), "🛠️"),
+    (("playlists",), "🎵"),
+    (("events", "plans"), "📅"),
+    (("manga",), "📚"),
+    (("anime",), "🌸"),
+    (("music",), "🎧"),
+    (("match", "sports"), "⚽"),
+    (("game",), "🎮"),
+    (("chat",), "💬"),
+)
+
+def styled_channel_name(name: str, kind: str) -> str:
+    """Discord-compatible Unicode emoji + separator; no custom emoji tokens."""
+    if kind == "voice":
+        if "・" in name:
+            return name
+        first, space, rest = name.partition(" ")
+        if space and not first.isascii():
+            return f"{first}・{rest}"
+        return f"🔊・{name}"
+    for keys, emoji in CHANNEL_EMOJI:
+        if any(key in name.casefold() for key in keys):
+            return f"{emoji}・{name}"
+    return f"💬・{name}"
+
+
+def styled_category_name(name: str) -> str:
+    emoji, separator, remainder = name.partition("・")
+    if separator:
+        section = remainder.replace("|", "┃").strip()
+        return f"╭━━ {emoji}・{section} ━━╮"
+    return f"╭━━ {name} ━━╮"
+
+
+def styled_role_name(name: str) -> str:
+    first, space, remainder = name.partition(" ")
+    if space and not first.isascii():
+        return f"{first}・{remainder}"
+    return f"✦・{name}"
+
+
 # Shown to Discord users as an actual slash-command dropdown.
 TEMPLATE_CHOICES = [
     app_commands.Choice(name=p["title"], value=key)
@@ -263,12 +327,15 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
     for name in plan["roles"]:
         key = "role:" + name
         rid = _get_item(bot, guild.id, template_key, key)
+        desired_name = styled_role_name(name)
         role = guild.get_role(rid) if rid else None
+        if role is None:
+            role = discord.utils.get(guild.roles, name=desired_name)
         if role is None:
             role = discord.utils.get(guild.roles, name=name)
         if role is None:
             role = await guild.create_role(
-                name=name, permissions=member_role_permissions(),
+                name=desired_name, permissions=member_role_permissions(),
                 colour=discord.Colour(plan["color"]), mentionable=False,
                 reason=f"TOV4R setup type {template_key}: safe member permissions",
             )
@@ -276,6 +343,10 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
             track_created(bot, guild.id, template_key, key, role, "role")
         else:
             result["reused"] += 1
+            # Restyle only roles tracked by a prior /setup and still carrying
+            # their original template name; never overwrite manual renames.
+            if rid == role.id and role.name == name and not role.managed and role < me.top_role:
+                await role.edit(name=desired_name, reason="TOV4R premium themed role styling")
             # Upgrade a role created by this bot using the original empty
             # permission baseline. Never touch a customized or unmanaged role.
             # Legacy records from previous /setup calls are not provenance
@@ -297,42 +368,48 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
     for group_spec in plan["groups"]:
         cat_key = "category:" + group_spec["key"]
         category_id = _get_item(bot, guild.id, template_key, cat_key)
+        category_label = styled_category_name(group_spec["name"])
         category = guild.get_channel(category_id) if category_id else None
+        if not isinstance(category, discord.CategoryChannel):
+            category = discord.utils.get(guild.categories, name=category_label)
         if not isinstance(category, discord.CategoryChannel):
             category = discord.utils.get(guild.categories, name=group_spec["name"])
         if not isinstance(category, discord.CategoryChannel):
             category = await guild.create_category(
-                group_spec["name"], reason=f"TOV4R setup type {template_key}",
+                category_label, reason=f"TOV4R premium setup type {template_key}",
             )
             result["categories_new"].append(category.name)
             track_created(bot, guild.id, template_key, cat_key, category, "category")
         else:
             result["reused"] += 1
+            if category_id == category.id and category.name == group_spec["name"]:
+                await category.edit(name=category_label, reason="TOV4R premium category styling")
         _save_item(bot, guild.id, template_key, cat_key, category.id, "category")
 
         for spec in group_spec["channels"]:
             item_key = f'{group_spec["key"]}:{spec["kind"]}:{spec["name"]}'
             channel_id = _get_item(bot, guild.id, template_key, item_key)
+            channel_label = styled_channel_name(spec["name"], spec["kind"])
             channel = guild.get_channel(channel_id) if channel_id else None
             expected = discord.TextChannel if spec["kind"] == "text" else discord.VoiceChannel
+            bucket = category.text_channels if spec["kind"] == "text" else category.voice_channels
             if not isinstance(channel, expected):
-                channel = discord.utils.get(
-                    category.text_channels if spec["kind"] == "text" else category.voice_channels,
-                    name=spec["name"],
-                )
+                channel = discord.utils.get(bucket, name=channel_label)
+            if not isinstance(channel, expected):
+                channel = discord.utils.get(bucket, name=spec["name"])
             made = False
             readonly = spec.get("readonly", False) or spec["name"] == "choose-roles"
             expected_policy = policy_overwrites(guild, spec["kind"], readonly)
             if not isinstance(channel, expected):
                 if spec["kind"] == "text":
                     channel = await guild.create_text_channel(
-                        spec["name"], category=category,
+                        channel_label, category=category,
                         topic=spec["topic"], overwrites=expected_policy,
                         reason=f"TOV4R setup type {template_key}",
                     )
                 else:
                     channel = await guild.create_voice_channel(
-                        spec["name"], category=category,
+                        channel_label, category=category,
                         overwrites=expected_policy,
                         reason=f"TOV4R setup type {template_key}",
                     )
@@ -341,11 +418,20 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
                 track_created(bot, guild.id, template_key, item_key, channel, spec["kind"])
             else:
                 result["reused"] += 1
+                # Restyle an old template channel if it was previously tracked
+                # by the bot and its plain name was not manually customized.
+                if (channel_id == channel.id
+                        and channel.name == spec["name"]
+                        and channel.category_id == category.id):
+                    await channel.edit(
+                        name=channel_label,
+                        reason="TOV4R premium themed channel styling",
+                    )
                 # Repair only bot-owned channels that still have the original
                 # baseline, not user-created or customized channels.
                 if (
                     was_created(bot, guild.id, template_key, item_key, channel.id)
-                    and channel.name == spec["name"]
+                    and channel.name == channel_label
                     and channel.category_id == category.id
                     and channel.overwrites == {}
                 ):
