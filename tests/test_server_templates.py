@@ -96,6 +96,9 @@ class FakeGuild:
         return category
 
     async def create_text_channel(self, name, *, category, topic, overwrites, reason):
+        # Mirrors discord.py: None is not a valid overwrites argument.
+        if not isinstance(overwrites, dict):
+            raise TypeError("overwrites parameter expects a dict.")
         channel = FakeText(self.new_id(), name, category, topic, overwrites, self)
         category.text_channels.append(channel)
         self.channels[channel.id] = channel
@@ -150,6 +153,18 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rules.messages), 1)
         self.assertIn(self.guild.me, rules.overwrites)
         self.assertTrue(rules.overwrites[self.guild.me].send_messages)
+
+    async def test_normal_channels_always_use_dict_overwrites(self):
+        # This reproduces the production error that affected /setup on Gfrx.
+        await self.apply("movies")
+        channels = [ch for ch in self.guild.channels.values()
+                    if isinstance(ch, FakeText)]
+        self.assertTrue(channels)
+        self.assertTrue(all(isinstance(ch.overwrites, dict) for ch in channels))
+        public = next(ch for ch in channels if ch.name == "movie-chat")
+        self.assertEqual(public.overwrites, {})
+        readonly = next(ch for ch in channels if ch.name == "cinema-rules")
+        self.assertIn(self.guild.default_role, readonly.overwrites)
 
     async def test_repeated_setup_does_not_duplicate_items_or_messages(self):
         await self.apply("movies")

@@ -415,8 +415,19 @@ class Features(commands.Cog):
         if isinstance(error,app_commands.CheckFailure): return await reply(i,'Ma3ndekch permission l had command.')
         original=getattr(error,'original',error)
         if isinstance(original,ValueError): return await reply(i,str(original))
+        if isinstance(original,discord.Forbidden):
+            log.warning('Discord permissions denied for %s in guild %s: %s',
+                        getattr(i.command,'name','unknown'),i.guild_id,original)
+            return await reply(i,
+                '❌ Discord refed had action (Missing Permissions). '
+                'Staff khas ychecki TOV4R Bot role: Manage Channels, Manage Roles, '
+                'Send Messages, Embed Links, w bot role tkoun fo9 roles li kayghed.')
+        if isinstance(original,discord.HTTPException):
+            log.warning('Discord API error in guild %s: %s',i.guild_id,original)
+            return await reply(i,'❌ Discord API error. Check channel limit, permissions, '
+                                    'and retry. Code: '+str(original.status))
         log.error('Command failed',exc_info=error)
-        await reply(i,'Command ma kmelch. Check bot permissions / role hierarchy, w logs dyal application.')
+        await reply(i,'❌ Bug f bot. Kayn error f logs; 3tina screenshot ola waqt l command.')
     @app_commands.guild_only()
     @app_commands.command(description='Invite Tov4r Bot to another server')
     async def invite(self,i:discord.Interaction):
