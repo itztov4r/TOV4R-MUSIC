@@ -78,7 +78,7 @@ def _protected_ids(bot, guild):
     for row in bot.store.all("SELECT channel FROM giveaways WHERE guild=?", (guild.id,)):
         result.add(row["channel"])
     # Do not break voice and ticket panel workflows on unrelated templates.
-    for channel in guild.channels:
+    for channel in _all_channels(guild):
         if channel.name in ("voice-panel", "tickets", "tov4r-logs", "welcome", "➕ Create your room"):
             result.add(channel.id)
     return result
@@ -107,6 +107,12 @@ def _archive_bins(bot, guild):
     )
 
 
+def _all_channels(guild):
+    # Discord.py exposes a list; some lightweight test doubles use a dict.
+    items = guild.channels
+    return list(items.values()) if isinstance(items, dict) else list(items)
+
+
 def candidates(bot, guild, template) -> tuple[list, list]:
     keep = _active_template_ids(bot, guild, template)
     protected = _protected_ids(bot, guild) | keep
@@ -117,7 +123,7 @@ def candidates(bot, guild, template) -> tuple[list, list]:
     archive_cats = {int(x["category_id"]) for x in _archive_bins(bot, guild)}
     archived = {int(x["channel_id"]) for x in _archive_rows(bot, guild)}
     valid, skipped = [], []
-    for channel in list(guild.channels):
+    for channel in _all_channels(guild):
         if isinstance(channel, discord.CategoryChannel):
             continue
         if getattr(channel, "category_id", None) in archive_cats or channel.id in archived:
