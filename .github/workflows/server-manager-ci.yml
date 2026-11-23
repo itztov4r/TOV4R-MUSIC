@@ -34,4 +34,22 @@ jobs:
           assert 'report' in commands, f'Autopilot report missing: {commands}'
           assert ServerAutopilot.__cog_group_name__ == 'autopilot'
           print('Autopilot group verified')
+          # A new guild called "1729" must not trigger the owner's autopilot.
+          from types import SimpleNamespace
+          from autopilot import TARGET_GUILD_ID
+          assert TARGET_GUILD_ID == 1564283597173690380
+          pilot = ServerAutopilot(SimpleNamespace())
+          pilot.start_for(SimpleNamespace(id=987654321, name='1729'))
+          assert pilot.started == set(), 'Autopilot triggered in unrelated server!'
+          print('Third-party guild autopilot isolation verified')
+          # Ensure anyone can be given the guild install URL with Discord scopes.
+          from bot import Community
+          from urllib.parse import urlparse, parse_qs
+          u = Community.invite_url(SimpleNamespace(application_id=1570489381624619198))
+          parts = parse_qs(urlparse(u).query)
+          assert parts['client_id'] == ['1570489381624619198']
+          assert {'bot', 'applications.commands'}.issubset(set(parts['scope'][0].split()))
+          assert 'permissions' in parts and int(parts['permissions'][0]) > 0
+          assert int(parts['permissions'][0]) & (1 << 3) == 0, 'Administrator must never be requested'
+          print('Guild install URL and least-privilege flags verified')
           PY

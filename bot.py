@@ -39,7 +39,8 @@ def safe_role(role, guild):
     dangerous = ('administrator','manage_guild','manage_roles','manage_channels','kick_members',
                  'ban_members','moderate_members','manage_messages','manage_webhooks','mention_everyone',
                  'manage_threads','manage_events','mute_members','deafen_members','move_members','view_audit_log')
-    return not role.is_default() and not role.managed and role < guild.me.top_role and not any(getattr(role.permissions,k,False) for k in dangerous)
+    return (not role.is_default() and not role.managed and guild.me is not None
+            and role < guild.me.top_role and not any(getattr(role.permissions,k,False) for k in dangerous))
 
 class Community(commands.Bot):
     def __init__(self, store=None):
@@ -418,8 +419,13 @@ class Features(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(description='Invite Tov4r Bot to another server')
     async def invite(self,i:discord.Interaction):
-        await i.response.send_message(embed=embed('Invite Tov4r Bot',
-            f'[Add to your server]({self.bot.invite_url()})\nAn admin runs /setup after inviting the bot.'),ephemeral=True)
+        await i.response.send_message(embed=embed('TOV4R BOT • Add to Server',
+            f'**[➕ Ajouter TOV4R Bot à ton serveur]({self.bot.invite_url()})**\n\n'
+            'Khtar server li 3ndek fih Manage Server, w confirmi permissions.\n'
+            'Mn b3d, dir **/setup** bach tjhed Voice, Tickets, Welcome w Logs.\n'
+            'Dir **/server scan** ila bghiti tchecki Roles, Channels w Bots.\n\n'
+            '🔒 Autopilot automatique dyal 1729 ma kaytla9ch f servers lokhrin.\n'
+            'Ma kaytlebch Administrator permission.'),ephemeral=True)
     @app_commands.guild_only()
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
@@ -429,6 +435,9 @@ class Features(commands.Cog):
             '**Staff**\n/setup · /configure · /panels · /rolepanel · /announce\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
+            '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
+            '/server harden_role · /server remove_role · /server move_channel\n'
+            '/server private_channel (admin confirmation before edits)\n'
             '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
     @app_commands.guild_only()
     @app_commands.command(description='Create or repair TOV4R community channels and panels')
