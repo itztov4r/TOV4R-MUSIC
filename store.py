@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
-                ticket_category=0, support_role=0, autorole=0, levels=True,
+                ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
                 blocked_words='', xp_cooldown=60)
 
@@ -48,6 +48,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS giveaways(message INTEGER PRIMARY KEY,guild INTEGER,channel INTEGER,prize TEXT,ends REAL,count INTEGER,state TEXT DEFAULT 'open',winners TEXT DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS entries(message INTEGER,user INTEGER,PRIMARY KEY(message,user));
         CREATE TABLE IF NOT EXISTS role_panels(message INTEGER PRIMARY KEY,guild INTEGER,roles TEXT);
+        CREATE TABLE IF NOT EXISTS template_items(
+            guild INTEGER NOT NULL, template TEXT NOT NULL,
+            item_key TEXT NOT NULL, discord_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            PRIMARY KEY(guild, template, item_key)
+        );
         ''')
         self.db.commit()
     def run(self, sql, params=()):
