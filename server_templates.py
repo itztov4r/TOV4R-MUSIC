@@ -1,7 +1,8 @@
 """Reusable, non-destructive Discord server setup templates for TOV4R Bot.
 
 Every server has independent template records in SQLite. Re-running the command
-reuses tracked channels and roles; it never removes or changes existing ones.
+reuses tracked resources; it only repairs unmodified default permissions.
+Opt-in cleanup only removes verified bot-created, empty channels from old themes.
 """
 from __future__ import annotations
 
@@ -10,6 +11,10 @@ import logging
 
 import discord
 from discord import app_commands
+from template_security import (
+    member_role_permissions, policy_overwrites, track_created,
+    was_created, clean_extra_channels,
+)
 
 LOG = logging.getLogger("tov4r.templates")
 
@@ -230,10 +235,12 @@ def _save_item(bot, guild_id: int, template: str, key: str, discord_id: int, kin
 
 
 async def apply_template(bot, guild: discord.Guild, template_key: str,
-                         *, panel_factory, safe_role_fn) -> dict:
-    """Create or reuse a template without removing/moving/editing existing resources.
+                         *, panel_factory, safe_role_fn,
+                         cleanup: bool = False) -> dict:
+    """Create/reuse a template. Cleanup needs the admin's explicit slash option.
 
-    Caller MUST hold bot.locks[('setup', guild.id)] to prevent duplicate creations.
+    Caller MUST hold bot.locks[('setup', guild.id)] to prevent duplicates.
+    Existing user-customized permissions and channels are preserved.
     """
     if template_key not in TEMPLATES:
         raise ValueError("Type ma kaynch: " + ", ".join(template_keys()))
@@ -248,7 +255,8 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
     plan = TEMPLATES[template_key]
     result = {"type": template_key, "title": plan["title"],
               "categories_new": [], "channels_new": [], "roles_new": [],
-              "reused": 0, "roles_panel": "skipped", "warnings": []}
+              "reused": 0, "roles_panel": "skipped",
+              "permissions_fixed": 0, "cleanup": None, "warnings": []}
 
     # Keep role hierarchy unchanged, with harmless, cosmetic permissions.
     roles = []
@@ -260,13 +268,28 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
             role = discord.utils.get(guild.roles, name=name)
         if role is None:
             role = await guild.create_role(
-                name=name, permissions=discord.Permissions.none(),
+                name=name, permissions=member_role_permissions(),
                 colour=discord.Colour(plan["color"]), mentionable=False,
-                reason=f"TOV4R setup type {template_key}",
+                reason=f"TOV4R setup type {template_key}: safe member permissions",
             )
             result["roles_new"].append(name)
+            track_created(bot, guild.id, template_key, key, role, "role")
         else:
             result["reused"] += 1
+            # Upgrade a role created by this bot using the original empty
+            # permission baseline. Never touch a customized or unmanaged role.
+            # Legacy records from previous /setup calls are not provenance
+            # proof; only our new ownership records authorize edits.
+            if (
+                was_created(bot, guild.id, template_key, key, role.id)
+                and role.permissions.value == 0
+                and not role.managed and role < me.top_role
+            ):
+                await role.edit(
+                    permissions=member_role_permissions(),
+                    reason="TOV4R: safe default role permissions",
+                )
+                result["permissions_fixed"] += 1
         _save_item(bot, guild.id, template_key, key, role.id, "role")
         roles.append(role)
 
@@ -282,6 +305,7 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
                 group_spec["name"], reason=f"TOV4R setup type {template_key}",
             )
             result["categories_new"].append(category.name)
+            track_created(bot, guild.id, template_key, cat_key, category, "category")
         else:
             result["reused"] += 1
         _save_item(bot, guild.id, template_key, cat_key, category.id, "category")
@@ -297,31 +321,39 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
                     name=spec["name"],
                 )
             made = False
+            readonly = spec.get("readonly", False) or spec["name"] == "choose-roles"
+            expected_policy = policy_overwrites(guild, spec["kind"], readonly)
             if not isinstance(channel, expected):
                 if spec["kind"] == "text":
-                    ow = (
-                        {
-                            guild.default_role: discord.PermissionOverwrite(
-                                send_messages=False, send_messages_in_threads=False),
-                            me: discord.PermissionOverwrite(
-                                view_channel=True, send_messages=True, embed_links=True),
-                        }
-                        if spec["readonly"] else None
-                    )
                     channel = await guild.create_text_channel(
                         spec["name"], category=category,
-                        topic=spec["topic"], overwrites=ow if ow is not None else {},
+                        topic=spec["topic"], overwrites=expected_policy,
                         reason=f"TOV4R setup type {template_key}",
                     )
                 else:
                     channel = await guild.create_voice_channel(
                         spec["name"], category=category,
+                        overwrites=expected_policy,
                         reason=f"TOV4R setup type {template_key}",
                     )
                 made = True
                 result["channels_new"].append(channel.name)
+                track_created(bot, guild.id, template_key, item_key, channel, spec["kind"])
             else:
                 result["reused"] += 1
+                # Repair only bot-owned channels that still have the original
+                # baseline, not user-created or customized channels.
+                if (
+                    was_created(bot, guild.id, template_key, item_key, channel.id)
+                    and channel.name == spec["name"]
+                    and channel.category_id == category.id
+                    and channel.overwrites == {}
+                ):
+                    await channel.edit(
+                        overwrites=expected_policy,
+                        reason=f"TOV4R restore template channel permissions {template_key}",
+                    )
+                    result["permissions_fixed"] += 1
             _save_item(bot, guild.id, template_key, item_key, channel.id, spec["kind"])
             channels[spec["name"]] = (channel, made)
 
@@ -381,6 +413,8 @@ async def apply_template(bot, guild: discord.Guild, template_key: str,
         )
 
     bot.store.update(guild.id, {"server_type": template_key})
+    if cleanup:
+        result["cleanup"] = await clean_extra_channels(bot, guild, template_key, TEMPLATES)
     return result
 
 
@@ -393,6 +427,13 @@ def format_result(summary: dict) -> str:
         f"🎭 Roles jdod: **{len(summary['roles_new'])}**\n"
         f"🔁 Existing resources reused: **{summary['reused']}**\n"
         f"🎛️ Self-roles panel: **{summary['roles_panel']}**\n"
-        "🛡️ Ma tmsa7 7ta channel/role qdim; ma tzadat 7ta permission admin.\n"
-        "Staff y9der ydir /configure bach ykml custom settings." + warning
+        f"🔐 Existing permissions safely repaired: **{summary['permissions_fixed']}**\n"
+        + (
+            "🧹 Empty bot-created old-theme channels deleted: "
+            f"**{len(summary['cleanup']['deleted'])}**\n"
+            if summary.get("cleanup") else
+            "🧹 Cleanup disabled (use /setup cleanup:true to remove empty bot-owned channels).\n"
+        )
+        + "🛡️ No human messages, customized channels, or staff roles are deleted.\n"
+        + "Staff y9der ydir /configure bach ykml custom settings." + warning
     )
