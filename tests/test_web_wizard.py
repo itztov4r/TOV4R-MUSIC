@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, patch
 import discord
 from aiohttp import web
 
+# Import all slash-command annotations before tests patch Discord channel
+# classes with in-memory doubles; importing while patched breaks discord.py.
+import bot as bot_module
 import web_dashboard_v2 as api
 from store import Store
 from test_server_templates import FakeGuild, FakeCategory, FakeText, FakeVoice
