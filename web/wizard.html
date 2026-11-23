@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#111117">
+  <title>TOV4R • Server Studio</title>
+  <link rel="stylesheet" href="/wizard/assets/wizard.css">
+  <script defer src="/wizard/assets/wizard.js"></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a href="/wizard" class="brand" aria-label="TOV4R Server Studio">TOV4R <span>SERVER STUDIO</span></a>
+    <p class="sidebar-sub">YOUR SERVER. YOUR STYLE.</p>
+    <nav aria-label="Navigation principale">
+      <a href="#overview">◈ &nbsp; Overview</a>
+      <a href="#builder">✦ &nbsp; Setup Wizard</a>
+      <a href="#preferences">⚙ &nbsp; Server Settings</a>
+      <a href="#activity">◷ &nbsp; Activity</a>
+    </nav>
+    <div class="side-bottom">
+      <span class="dot"></span><span id="bot-status">Connecting to TOV4R…</span>
+      <p>No real data? Nothing is invented.</p>
+    </div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V4</span></div></div>
+      <div class="user-slot"><span id="actor">Not signed in</span><button type="button" id="logout" class="quiet" hidden>Sign out</button></div>
+    </header>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+    <section id="gate" class="gate">
+      <div class="eyebrow">SECURE ACCESS</div>
+      <h1>Your community.<br><em>Under control.</em></h1>
+      <p>Choose your server, preview a premium design, and apply a setup with one click. Changes are scoped to the Discord server you manage.</p>
+      <a id="discord-login" href="/auth/login" class="action" hidden>◈ &nbsp; Continue with Discord</a>
+      <div class="owner-portal">
+        <h2>Dashboard owner access</h2>
+        <p>Owner key mode is still available for the original dashboard.</p>
+        <form id="key-form"><label for="owner-key">Private dashboard key</label><div class="inline"><input id="owner-key" type="password" minlength="32" placeholder="DASHBOARD_KEY" autocomplete="off" required><button class="action" type="submit">Unlock ↗</button></div></form>
+        <small>Keys are held in this browser tab memory only, not in URLs or localStorage.</small>
+      </div>
+      <div id="oauth-info" class="note"></div>
+    </section>
+    <div id="workspace" hidden>
+      <section id="overview" class="hero">
+        <div>
+          <div class="eyebrow">SELECT YOUR COMMUNITY</div>
+          <h1>Make it <em>legendary.</em></h1>
+          <p>Every Discord server has its own setup, permissions and personality.</p>
+          <div class="server-switch"><label for="guild">SERVER</label><select id="guild" aria-label="Choose your server"></select></div>
+        </div>
+        <div class="hero-panel">
+          <div class="eyebrow">SERVER STATUS</div>
+          <strong id="guild-name">—</strong>
+          <span id="guild-theme">Template not selected</span>
+          <div class="online"><span class="dot"></span>LIVE DISCORD STATE</div>
+        </div>
+      </section>
+      <div class="stats" id="stats"></div>
+      <section id="builder" class="panel builder">
+        <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Choose a theme. See exactly what TOV4R plans to add before it touches your server.</p></div><span class="step">PREVIEW → APPLY</span></div>
+        <div id="themes" class="themes" role="group" aria-label="Server types"></div>
+        <div class="wizard-options">
+          <label class="switch"><input id="focus" type="checkbox"><span class="toggle-ui"></span><span><b>Focus Mode</b><small>Hide unrelated public channels in a recoverable private archive. Never delete their messages.</small></span></label>
+          <p class="safety">🔒 Unrelated admin, log and active voice channels are protected. Your current roles and messages are preserved.</p>
+        </div>
+        <div class="wizard-actions"><button class="action" id="preview" type="button">Generate preview →</button><button class="quiet" id="reset-preview" type="button">Reset</button></div>
+        <div id="preview-panel" class="preview-panel" hidden>
+          <div class="head"><div><span class="eyebrow">02 / REVIEW</span><h2 id="preview-name">Your layout</h2></div><span class="step">NOTHING CHANGED YET</span></div>
+          <div class="preview-stats" id="preview-stats"></div>
+          <div id="preview-structure" class="structure"></div>
+          <p class="safety" id="preview-warning"></p>
+          <div class="wizard-actions"><button class="action" id="apply" type="button">Apply approved setup ↗</button><span class="hint">Preview expires after 10 minutes or if the server changes.</span></div>
+        </div>
+      </section>
+      <section id="preferences" class="panel">
+        <div class="head"><div><span class="eyebrow">03 / CONTROL</span><h2>Protection & settings</h2><p>Settings are saved to the selected server only.</p></div></div>
+        <form id="settings-form">
+          <div class="settings-grid">
+            <label class="setting"><span><b>Anti-Spam</b><small>Automatic spam moderation</small></span><input type="checkbox" name="antispam"></label>
+            <label class="setting"><span><b>Anti-Invites</b><small>Block public Discord invite links</small></span><input type="checkbox" name="anti_invites"></label>
+            <label class="setting"><span><b>Levels & XP</b><small>Enable community progression</small></span><input type="checkbox" name="levels"></label>
+            <label class="setting"><span><b>XP cooldown</b><small>Seconds between XP awards (15–3600)</small></span><input name="xp_cooldown" type="number" min="15" max="3600" required></label>
+          </div>
+          <label class="line-field">Welcome message <small>Use {mention}, {name} or {server}</small><textarea rows="2" maxlength="1500" name="welcome_text"></textarea></label>
+          <label class="line-field">Filtered words <small>Comma-separated</small><textarea rows="2" maxlength="1500" name="blocked_words"></textarea></label>
+          <div class="wizard-actions"><button class="action" type="submit" id="save-settings">Save server settings ↗</button></div>
+        </form>
+      </section>
+      <section id="activity" class="two-cols">
+        <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><div id="events" class="feed"></div></div>
+        <div class="panel"><div class="head"><div><span class="eyebrow">05 / UNDO</span><h2>Restore layout</h2></div></div><p>Focused setup keeps an archive of unrelated channels. Reopen the archived layout at any time.</p><button class="quiet" id="restore" type="button">Restore archived channels ↶</button><p class="hint">This only restores channels previously archived by TOV4R. No bulk deletion.</p></div>
+      </section>
+    </div>
+    <footer class="footer">TOV4R BOT &nbsp; • &nbsp; PREMIUM DISCORD COMMUNITY MANAGEMENT &nbsp; • &nbsp; <a href="/">Legacy owner dashboard</a></footer>
+  </main>
+</div>
+</body>
+</html>
