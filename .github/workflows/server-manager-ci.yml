@@ -23,6 +23,24 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_server_templates.py' -v
       - name: Test secure web wizard API and guild isolation
         run: python -m unittest discover -s tests -p 'test_web_wizard.py' -v
+      - name: Compile AI and live voice modules
+        run: python -m compileall -q ai_agent.py voice_ai.py live_voice.py tests/test_ai_agent.py tests/test_voice_ai.py tests/test_live_voice.py
+      - name: Test AI action allowlist and audio input handling
+        run: |
+          python -m unittest discover -s tests -p 'test_ai_agent.py' -v
+          python -m unittest discover -s tests -p 'test_voice_ai.py' -v
+          python -m unittest discover -s tests -p 'test_live_voice.py' -v
+      - name: Verify live voice slash commands and disabled default
+        run: |
+          python - <<'PY'
+          from live_voice import LiveVoice
+          from types import SimpleNamespace
+          names = {c.name for c in LiveVoice.__cog_app_commands__}
+          assert {'tl3', 'hbt'} <= names
+          cog = LiveVoice(SimpleNamespace())
+          assert not cog.enabled
+          assert not cog.allowed(SimpleNamespace(guild=None))
+          PY
       - name: Validate browser JavaScript syntax
         run: |
           node --check web/wizard.js
