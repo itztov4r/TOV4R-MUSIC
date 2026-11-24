@@ -70,6 +70,8 @@ class Community(commands.Bot):
         await self.add_cog(AIAgent(self))
         from voice_ai import VoiceAI
         await self.add_cog(VoiceAI(self))
+        from live_voice import LiveVoice
+        await self.add_cog(LiveVoice(self))
         self.add_view(VoicePanel(self)); self.add_view(TicketPanel(self)); self.add_view(CloseTicket(self))
         for r in self.store.all("SELECT * FROM giveaways WHERE state IN ('open','drawn')"):
             self.add_view(GiveawayPanel(self,r['message']),message_id=r['message'])
