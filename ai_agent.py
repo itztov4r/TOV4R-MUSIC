@@ -44,6 +44,26 @@ def validate_plan(plan):
     return action, name
 
 
+class AIAPIError(RuntimeError):
+    def __init__(self, status, code):
+        self.status = status
+        self.code = code if code in {"insufficient_quota", "invalid_api_key", "model_not_found", "rate_limit_exceeded", "billing_hard_limit_reached", "invalid_request_error", "unsupported_value"} else "unknown"
+        super().__init__("OpenAI HTTP error")
+
+    def user_message(self):
+        if self.status == 401 or self.code == "invalid_api_key":
+            return "OpenAI API: clé invalide ou révoquée (401). Contacte le propriétaire du bot."
+        if self.code in {"insufficient_quota", "billing_hard_limit_reached"}:
+            return "OpenAI API: quota ou crédits épuisés. Contacte le propriétaire du bot."
+        if self.status == 429:
+            return "OpenAI API: limite de requêtes ou quota atteint (429). Contacte le propriétaire du bot."
+        if self.status in (403, 404):
+            return "OpenAI API: accès au modèle refusé ou modèle indisponible. Contacte le propriétaire du bot."
+        if self.status >= 500:
+            return "OpenAI API: service temporairement indisponible."
+        return f"OpenAI API: erreur HTTP {self.status}. Contacte le propriétaire du bot."
+
+
 class AIAgent(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -87,7 +107,14 @@ class AIAgent(commands.Cog):
                 json=payload,
             ) as response:
                 if response.status != 200:
-                    raise RuntimeError("AI request failed")
+                    code = None
+                    try:
+                        payload_error = await response.json()
+                        if isinstance(payload_error, dict) and isinstance(payload_error.get("error"), dict):
+                            code = payload_error["error"].get("code")
+                    except (ValueError, aiohttp.ClientError):
+                        pass
+                    raise AIAPIError(response.status, code if isinstance(code, str) else "")
                 data = await response.json()
         if data.get("status") != "completed":
             raise ValueError("Incomplete plan")
@@ -150,6 +177,12 @@ class AIAgent(commands.Cog):
                     result = "نقدر نحصي الرومات والرولات أو نزيد روم نصية أو رول عادية. عطيني طلب واحد واضح."
             LOG.info("AI operation guild=%s actor=%s action=%s", guild.id, interaction.user.id, action)
             await interaction.followup.send(result, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        except AIAPIError as exc:
+            LOG.warning("OpenAI request rejected status=%s code=%s", exc.status, exc.code)
+            await interaction.followup.send(exc.user_message(), ephemeral=True)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            LOG.warning("OpenAI connection failed: %s", type(exc).__name__)
+            await interaction.followup.send("OpenAI API: problème de connexion ou délai dépassé.", ephemeral=True)
         except Exception as exc:
             LOG.warning("AI operation failed: %s", type(exc).__name__)
             await interaction.followup.send("ما قدرش البوت يكمل الطلب. راجع الإعدادات والصلاحيات.", ephemeral=True)
