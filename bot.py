@@ -66,12 +66,6 @@ class Community(commands.Bot):
         await self.add_cog(ServerManager(self))
         from autopilot import ServerAutopilot
         await self.add_cog(ServerAutopilot(self))
-        from ai_agent import AIAgent
-        await self.add_cog(AIAgent(self))
-        from voice_ai import VoiceAI
-        await self.add_cog(VoiceAI(self))
-        from live_voice import LiveVoice
-        await self.add_cog(LiveVoice(self))
         self.add_view(VoicePanel(self)); self.add_view(TicketPanel(self)); self.add_view(CloseTicket(self))
         for r in self.store.all("SELECT * FROM giveaways WHERE state IN ('open','drawn')"):
             self.add_view(GiveawayPanel(self,r['message']),message_id=r['message'])
@@ -450,9 +444,9 @@ class Features(commands.Cog):
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
         await i.response.send_message(embed=embed('TOV4R • Command center',
-            '**Members**\n/help · /invite · /rank · /leaderboard · /serverinfo\n'
+            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels\n/rolepanel · /announce\n'
+            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup\n/rolepanel · /announce\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
@@ -521,6 +515,28 @@ class Features(commands.Cog):
         await i.channel.send(embed=embed('TOV4R • '+kind,'Use the buttons below.'),view=VoicePanel(self.bot) if kind=='voice' else TicketPanel(self.bot))
         await reply(i,'Panel sent ✅')
     @app_commands.guild_only()
+    @app_commands.command(description='Configure private support tickets and publish the ticket panel')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ticket_setup(self,i:discord.Interaction,category:discord.CategoryChannel,support:discord.Role,panel:discord.TextChannel|None=None):
+        if support.is_default() or support.managed:
+            raise ValueError('Choose a dedicated staff role, not everyone or a managed role.')
+        if i.user.id!=i.guild.owner_id and support>=i.user.top_role:
+            raise ValueError('Support role must be below your highest role.')
+        target=panel or i.channel
+        if not isinstance(target,discord.TextChannel):
+            raise ValueError('Choose a text channel for the panel.')
+        if not i.guild.me.guild_permissions.manage_channels or not i.guild.me.guild_permissions.manage_roles:
+            raise ValueError('Bot needs Manage Channels and Manage Roles for private tickets.')
+        perms=target.permissions_for(i.guild.me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            raise ValueError('Bot needs View Channel, Send Messages and Embed Links in panel channel.')
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('setup',i.guild_id)]:
+            await target.send(embed=embed('🎫 TOV4R • Support Center','Need help? Open a private ticket using the button below.\nOnly you and authorized staff can view your ticket.\nPlease do not share passwords or other secrets.'),view=TicketPanel(self.bot))
+            self.bot.store.update(i.guild_id,{'ticket_category':category.id,'support_role':support.id})
+        await reply(i,'Ticket system configured ✅')
+
+    @app_commands.guild_only()
     @app_commands.command(description='Publish a safe self-service role button')
     @app_commands.checks.has_permissions(manage_roles=True)
     async def rolepanel(self,i:discord.Interaction,role:discord.Role):
@@ -530,12 +546,33 @@ class Features(commands.Cog):
         m=await i.channel.send(embed=embed('Choose your role',f'Click to add / remove **{role.name}**.'),view=RolePanel(self.bot,roles))
         self.bot.store.run('INSERT INTO role_panels VALUES(?,?,?)',(m.id,i.guild_id,json.dumps(roles)))
         await reply(i,'Role panel sent ✅')
+    def profile_embed(self, guild_id, member):
+        row=self.bot.store.one('SELECT points FROM xp WHERE guild=? AND user=?',(guild_id,member.id))
+        points=row['points'] if row else 0
+        lv=level(points)
+        start=lv**2*100
+        goal=(lv+1)**2*100
+        progress=points-start
+        filled=min(10,max(0,progress*10//(goal-start)))
+        rank=self.bot.store.one('SELECT COUNT(*) n FROM xp WHERE guild=? AND points>?',(guild_id,points))['n']+1
+        e=embed('✦ TOV4R • Member profile',discord.utils.escape_markdown(member.display_name))
+        e.set_thumbnail(url=member.display_avatar.url)
+        e.add_field(name='🏆 Level',value=str(lv))
+        e.add_field(name='⚡ XP',value=f'{points:,}')
+        e.add_field(name='📊 Rank',value=f'#{rank}' if row else 'Unranked')
+        e.add_field(name='Next level',value=f'`{"█"*filled+"░"*(10-filled)}`\n{progress:,} / {goal-start:,} XP • {goal-points:,} remaining',inline=False)
+        e.set_footer(text='TOV4R • Server XP only')
+        return e
+
+    @app_commands.guild_only()
+    @app_commands.command(description='View a member profile, level, rank and XP progress')
+    async def profile(self,i:discord.Interaction,member:discord.Member|None=None):
+        await i.response.send_message(embed=self.profile_embed(i.guild_id,member or i.user))
+
     @app_commands.guild_only()
     @app_commands.command(description='See your level and XP')
     async def rank(self,i:discord.Interaction,member:discord.Member|None=None):
-        m=member or i.user; r=self.bot.store.one('SELECT points FROM xp WHERE guild=? AND user=?',(i.guild_id,m.id))
-        points=r['points'] if r else 0; lv=level(points)
-        await i.response.send_message(embed=embed(m.display_name,f'Level **{lv}** • **{points} XP**\nNext level: {(lv+1)**2*100} XP'))
+        await i.response.send_message(embed=self.profile_embed(i.guild_id,member or i.user))
     @app_commands.guild_only()
     @app_commands.command(description='Top 10 community members by XP')
     async def leaderboard(self,i:discord.Interaction):
