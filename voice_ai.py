@@ -102,12 +102,15 @@ class VoiceAI(commands.GroupCog, group_name="voiceai", group_description="TOV4R 
         self.bot = bot
         self.key = os.getenv("OPENAI_API_KEY", "").strip()
         self.guild_id = os.getenv("TOV4R_AI_GUILD_ID", "").strip()
+        self.all_guilds = os.getenv("TOV4R_AI_ALL_GUILDS", "") == "1"
+        self.quota = []
         self.active = {}
         self.last = 0.0
 
     def permitted(self, i):
-        return (bool(self.key and self.guild_id.isdecimal()) and i.guild is not None
-                and i.guild.id == int(self.guild_id) and i.user.id == i.guild.owner_id)
+        return (bool(self.key) and i.guild is not None
+                and (self.all_guilds or (self.guild_id.isdecimal() and i.guild.id == int(self.guild_id)))
+                and i.user.id == i.guild.owner_id)
 
     def private_channel(self, i):
         channel = getattr(getattr(i.user, "voice", None), "channel", None)
@@ -115,7 +118,7 @@ class VoiceAI(commands.GroupCog, group_name="voiceai", group_description="TOV4R 
             return None
         return channel if all(m.id in (i.user.id, self.bot.user.id) for m in channel.members) else None
 
-    @app_commands.command(name="ask", description="Ask AI in text or attach your own audio; answer in voice")
+    @app_commands.command(name="ask", description="Send a question or your own audio to OpenAI; spoken answer")
     @app_commands.describe(question="Your question (max 500 characters)",
                            audio="Your own audio file, max 2 MB / first 30 seconds; sent to OpenAI")
     @app_commands.guild_only()
@@ -133,7 +136,13 @@ class VoiceAI(commands.GroupCog, group_name="voiceai", group_description="TOV4R 
         if i.guild.id in self.active or time.monotonic() - self.last < 15:
             await i.response.send_message("كاين طلب جاري أو خاصك تستنى شوية.", ephemeral=True)
             return
-        self.last = time.monotonic()
+        now = time.monotonic()
+        self.quota = [t for t in self.quota if now - t < 86400]
+        if len(self.quota) >= 10:
+            await i.response.send_message("Voice AI: limite globale de requêtes atteinte.", ephemeral=True)
+            return
+        self.quota.append(now)
+        self.last = now
         task = asyncio.current_task()
         self.active[i.guild.id] = task
         vc = None

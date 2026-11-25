@@ -50,13 +50,15 @@ class AIAgent(commands.Cog):
         self.key = os.getenv("OPENAI_API_KEY", "").strip()
         self.model = os.getenv("TOV4R_AI_MODEL", "gpt-4o-mini").strip()
         self.guild_id = os.getenv("TOV4R_AI_GUILD_ID", "").strip()
+        self.all_guilds = os.getenv("TOV4R_AI_ALL_GUILDS", "") == "1"
+        self.quota = []
         self.last_request = 0.0
 
     def authorized(self, interaction):
         return (
-            bool(self.key and self.guild_id.isdecimal())
+            bool(self.key)
             and interaction.guild is not None
-            and interaction.guild.id == int(self.guild_id)
+            and (self.all_guilds or (self.guild_id.isdecimal() and interaction.guild.id == int(self.guild_id)))
             and interaction.user.id == interaction.guild.owner_id
         )
 
@@ -96,7 +98,7 @@ class AIAgent(commands.Cog):
             raise ValueError("No single plan")
         return validate_plan(json.loads(outputs[0]))
 
-    @app_commands.command(name="ai", description="TOV4R AI — owner-only server assistant")
+    @app_commands.command(name="ai", description="TOV4R AI — owner only; request sent to OpenAI")
     @app_commands.guild_only()
     @app_commands.describe(request="One request in Darija, French, Arabic or English")
     async def ai(self, interaction: discord.Interaction, request: str):
@@ -111,6 +113,11 @@ class AIAgent(commands.Cog):
         if now - self.last_request < 10:
             await interaction.response.send_message("عاود من بعد شوية.", ephemeral=True)
             return
+        self.quota = [t for t in self.quota if now - t < 86400]
+        if len(self.quota) >= 30:
+            await interaction.response.send_message("AI: limite globale de requêtes atteinte.", ephemeral=True)
+            return
+        self.quota.append(now)
         self.last_request = now
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
