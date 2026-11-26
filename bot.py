@@ -685,10 +685,7 @@ class Features(commands.Cog):
             if changes: self.bot.store.update(i.guild_id,changes)
             if voice_xp is not None or levels is not None:
                 self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
-            result=await provision_all(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'],voice_panel_factory=VoicePanel,ticket_panel_factory=TicketPanel,embed_factory=embed)
-            if security is not None:
-                self.bot.store.update(i.guild_id,{'security_enabled':security})
-                self.bot.security.clear(i.guild_id)
+            result=await provision_all(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'],voice_panel_factory=VoicePanel,ticket_panel_factory=TicketPanel,embed_factory=embed,security=security)
             await self.bot.audit(i.guild,'Unified setup',f'By {i.user.id}')
         await reply(i,'✅ Setup complete • Roles: '+str(len(result['roles_new']))+' new • Channels: '+str(len(result['channels_new']))+' new • Voice, tickets, welcome, verification, roles and private logs configured. No existing channels deleted or staff permissions changed. '+(' '.join(result['warnings'])))
 

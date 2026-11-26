@@ -327,7 +327,7 @@ class DashboardV2:
 
     async def apply(self, request):
         principal, guild = await self._guild(request, write=True)
-        if principal['sid'] is not None and str(principal['user'])!=str(guild.owner_id):
+        if principal['sid'] is not None and str(principal['actor'])!=str(guild.owner_id):
             raise web.HTTPForbidden(text='Server owner only for full setup')
         data = await self._json(request)
         plan_id = data.get("plan_id")

@@ -32,7 +32,7 @@ def private_log(channel,guild):
             if not isinstance(target,discord.Role) or not target.permissions.administrator: return False
     return True
 
-async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_factory,role_panel_factory=None,safe_role_fn=None,embed_factory,focus=False,cleanup=False):
+async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_factory,role_panel_factory=None,safe_role_fn=None,embed_factory,focus=False,cleanup=False,security=None):
     if focus or cleanup: raise ValueError("Channel cleanup is disabled.")
     if not guild.me or not all(getattr(guild.me.guild_permissions,k) for k in ("manage_channels","manage_roles","send_messages","embed_links","read_message_history","attach_files")):
         raise ValueError("Bot needs Manage Channels, Manage Roles, Send Messages, Embed Links, Read Message History and Attach Files.")
@@ -64,11 +64,14 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
     if not private_log(logs,guild):
         logs=await guild.create_text_channel("tov4r-private-logs",overwrites=private,reason="TOV4R unified setup")
         update(logs_channel=logs.id); summary["channels_new"].append(logs.name)
-    update(security_channel=logs.id)
-    if not tracked(bot,guild,"initialized"):
-        # Explicit setup enables defensive alerts, but never voice activity tracking by default.
-        if not cfg["security_enabled"]: update(security_enabled=True)
-        remember(bot,guild,"initialized",guild.id,"state")
+    if not private_log(guild.get_channel(cfg["security_channel"]),guild): update(security_channel=logs.id)
+    first=not tracked(bot,guild,"initialized")
+    if security is not None or first:
+        enabled=security if security is not None else True
+        if cfg["security_enabled"]!=enabled:
+            update(security_enabled=enabled)
+            bot.security.clear(guild.id)
+    if first: remember(bot,guild,"initialized",guild.id,"state")
     async def role(key,name,color,template=TEMPLATE):
         r=guild.get_role(tracked(bot,guild,key,template))
         if not r:
