@@ -47,7 +47,9 @@ async def provision_rewards(bot,guild):
 
 async def grant_rewards(bot,member):
     from setup_service import reserved_staff_role
+    from verification_gate import admitted
     guild=member.guild
+    if not admitted(bot,member): return []
     cfg=bot.store.config(guild.id)
     if member.bot or not cfg["levels"] or not guild.me or not guild.me.guild_permissions.manage_roles:
         return []

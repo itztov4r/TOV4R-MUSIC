@@ -116,6 +116,8 @@ def setup_role(bot, guild, key, name):
     return next((r for r in guild.roles if r.name == name and not r.managed and r.id != guild.default_role.id), None)
 
 def reserved_staff_role(bot, guild, role):
+    if bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification_gate__' AND item_key='access' AND discord_id=?",(guild.id,role.id)):
+        return True
     if bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(guild.id,role.id)):
         return True
     if role.id == bot.store.config(guild.id)["support_role"]:

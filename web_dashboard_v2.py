@@ -303,7 +303,7 @@ class DashboardV2:
             "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS) + 4,
             "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
             "warnings": ["Upper-bound estimates for missing essential service channels and roles. Existing channels are not deleted or moved.",
-                         "Owner-only setup. Admin and Moderator permissions remain manual; no roles assigned automatically by setup.",
+                         "Owner-only setup. Verification gate preserves existing member access via a dedicated role and restricts new members. Admin and Moderator permissions remain manual.",
                          "Existing panel messages may be refreshed. Security alerts use private logs; voice XP remains opt-in."]
         }
 

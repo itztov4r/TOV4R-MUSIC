@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 from level_rewards import tracked_reward, reward_permissions
 from setup_service import reserved_staff_role
+from verification_gate import grant_access, admitted
 
 THEMES={"ruby":("#ef3340",0xef3340),"ocean":("#3498db",0x3498db),"violet":("#9b59b6",0x9b59b6),"emerald":("#2ecc71",0x2ecc71)}
 TEXT={
@@ -84,7 +85,9 @@ class VerifyView(discord.ui.View):
             if role not in i.user.roles:
                 try: await i.user.add_roles(role,reason="TOV4R rules acknowledgement")
                 except discord.HTTPException: return await answer(i,"Bot cannot assign this role.")
-            await answer(i,"✅ Verified / Vérifié")
+            if not await grant_access(self.bot,i.user):
+                return await answer(i,"Verified role assigned, but access unavailable. Ask staff to check TOV4R Access.")
+            await answer(i,"✅ Verified / Vérifié • Server access unlocked")
 
 class MultiRoleView(discord.ui.View):
     def __init__(self,bot,roles):
@@ -98,6 +101,7 @@ class MultiRoleView(discord.ui.View):
         if not i.guild or i.user.bot: return await answer(i,"Unavailable.")
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[("role-menu",i.guild_id,i.user.id)]:
+            if not admitted(self.bot,i.user): return await answer(i,"Complete verification first.")
             if paused(self.bot,i.guild_id): return await answer(i,"Automatic roles temporarily paused.")
             row=self.bot.store.one("SELECT roles FROM community_role_menus WHERE guild=? AND message=?",(i.guild_id,i.message.id))
             if not row: return await answer(i,"Menu unavailable.")

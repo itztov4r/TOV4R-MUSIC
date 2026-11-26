@@ -5,6 +5,7 @@ from setup_service import provision_server, reserved_staff_role
 from community_premium import basic_role, VerifyView, MultiRoleView, language, welcome_name
 from localization import tr
 from level_rewards import tracked_reward
+from verification_gate import public_access, install_gate
 
 TEMPLATE="__unified_setup__"
 MENU_ROLES=(("gaming","TOV4R • Gaming",0x5865f2),("music","TOV4R • Music",0x2ecc71),("movies","TOV4R • Movies",0x9b59b6))
@@ -17,15 +18,15 @@ def tracked(bot,guild,key,template=TEMPLATE):
 def remember(bot,guild,key,id,kind,template=TEMPLATE):
     bot.store.run("INSERT OR REPLACE INTO template_items VALUES(?,?,?,?,?)",(guild.id,template,key,id,kind))
 
-def public_panel(channel,guild):
+def public_panel(channel,guild,bot=None):
     if not isinstance(channel,discord.TextChannel): return False
     p=channel.permissions_for(guild.me)
-    return p.view_channel and p.send_messages and p.embed_links and channel.permissions_for(guild.default_role).view_channel
+    return p.view_channel and p.send_messages and p.embed_links and (public_access(bot,guild,channel) if bot else channel.permissions_for(guild.default_role).view_channel)
 
-def private_log(channel,guild):
+def private_log(channel,guild,bot=None):
     if not isinstance(channel,discord.TextChannel): return False
     p=channel.permissions_for(guild.me)
-    if not(p.view_channel and p.send_messages and p.embed_links) or channel.permissions_for(guild.default_role).view_channel: return False
+    if not(p.view_channel and p.send_messages and p.embed_links) or (public_access(bot,guild,channel) if bot else channel.permissions_for(guild.default_role).view_channel): return False
     # Do not reuse a log channel with explicit grants to unrelated members or roles.
     for target,ow in channel.overwrites.items():
         if ow.view_channel is True and target.id!=guild.me.id:
@@ -57,7 +58,7 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
     pub={guild.default_role:discord.PermissionOverwrite(send_messages=False),guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True,attach_files=True)}
     private={guild.default_role:discord.PermissionOverwrite(view_channel=False),guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True)}
     def usable_welcome(ch):
-        return public_panel(ch,guild) and welcome_name(ch.name) and ch.permissions_for(guild.me).attach_files
+        return public_panel(ch,guild,bot) and welcome_name(ch.name) and ch.permissions_for(guild.me).attach_files
     welcome=guild.get_channel(cfg["welcome_channel"])
     if not usable_welcome(welcome):
         welcome=next((ch for ch in guild.text_channels if usable_welcome(ch)),None)
@@ -78,7 +79,7 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
             except discord.HTTPException: summary["warnings"].append("Could not disable native Discord arrival messages; check Manage Server.")
         else: summary["warnings"].append("Disable native arrival messages in Server Settings > Overview, or grant Manage Server.")
     logs=guild.get_channel(cfg["logs_channel"])
-    if not private_log(logs,guild):
+    if not private_log(logs,guild,bot):
         logs=await guild.create_text_channel("tov4r-private-logs",overwrites=private,reason="TOV4R unified setup")
         update(logs_channel=logs.id); summary["channels_new"].append(logs.name)
     community=guild.get_channel(cfg["community_channel"])
@@ -88,8 +89,8 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
             guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True)
         },reason="TOV4R community modules")
         update(community_channel=community.id); summary["channels_new"].append(community.name)
-    if not public_panel(community,guild): summary["warnings"].append("Community channel not public or missing bot permissions; configure access manually.")
-    if not private_log(guild.get_channel(cfg["security_channel"]),guild): update(security_channel=logs.id)
+    if not public_panel(community,guild,bot): summary["warnings"].append("Community channel not public or missing bot permissions; configure access manually.")
+    if not private_log(guild.get_channel(cfg["security_channel"]),guild,bot): update(security_channel=logs.id)
     first=not tracked(bot,guild,"initialized")
     if security is not None or first:
         enabled=security if security is not None else True
@@ -119,10 +120,11 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
     if safe:
         data=[(r.id,r.name) for r in safe]
         definitions.append(("roles",discord.Embed(title="TOV4R • Roles",description=t[4],colour=0xef3340),MultiRoleView(bot,data),data,"community:roles:v9"))
+    verify_channel=None
     for name,e,view,data,prefix in definitions:
         channel=guild.get_channel(tracked(bot,guild,"channel:"+name))
-        if not public_panel(channel,guild):
-            channel=next((ch for ch in guild.text_channels if ch.name==name and public_panel(ch,guild)),None)
+        if not public_panel(channel,guild,bot):
+            channel=next((ch for ch in guild.text_channels if ch.name==name and public_panel(ch,guild,bot)),None)
         if channel is None:
             overwrites=pub
             if name=="verification":
@@ -143,10 +145,18 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
             await msg.edit(embed=e,view=view)
         else: msg=await channel.send(embed=e,view=view)
         remember(bot,guild,"panel:"+name,msg.id,"message")
-        if name=="verification": bot.add_view(view,message_id=msg.id)
+        if name=="verification":
+            verify_channel=channel
+            bot.add_view(view,message_id=msg.id)
         if data is not None:
             bot.store.run("INSERT OR REPLACE INTO community_role_menus VALUES(?,?,?)",(msg.id,guild.id,json.dumps(data)))
             bot.add_view(view,message_id=msg.id)
+    try:
+        ok,detail=await install_gate(bot,guild,verify_channel)
+    except (discord.HTTPException,TimeoutError):
+        ok,detail=False,"Verification gate could not finish; check permissions and rerun setup."
+    summary["verification_gate"]=ok
+    summary["warnings"].append(detail)
     summary["roles_panel"]="configured" if safe else "unavailable"
     if not guild.me.guild_permissions.view_audit_log: summary["warnings"].append("Grant View Audit Log for destructive-activity alerts.")
     return summary

@@ -6,6 +6,7 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
+from verification_gate import public_access
 
 NONE=discord.AllowedMentions.none()
 COLORS={"ruby":0xef3340,"ocean":0x3498db,"violet":0x9b59b6,"emerald":0x2ecc71}
@@ -45,7 +46,7 @@ def cast_vote(store,guild,message,user,choice,now):
 def community_channel(bot,guild):
     c=guild.get_channel(bot.store.config(guild.id)["community_channel"])
     if not isinstance(c,discord.TextChannel): return None
-    if not c.permissions_for(guild.default_role).view_channel: return None
+    if not public_access(bot,guild,c): return None
     p=c.permissions_for(guild.me)
     return c if p.view_channel and p.send_messages and p.embed_links else None
 

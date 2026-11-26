@@ -25,6 +25,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 from community_tools import eligible, save_backup, read_backup, restore_settings
 from localization import tr
 from unified_setup import provision_all
+from verification_gate import active as gate_active, admitted, gate_channel, public_access
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -142,7 +143,7 @@ class Community(commands.Bot):
         self.store.event(guild.id,'Security '+kind,detail)
         channel=guild.get_channel(self.store.config(guild.id)['security_channel'])
         # Never post security alerts in a public channel.
-        if isinstance(channel,discord.TextChannel) and not channel.permissions_for(guild.default_role).view_channel:
+        if isinstance(channel,discord.TextChannel) and not public_access(self,guild,channel):
             try: await channel.send(embed=embed('🛡 TOV4R Security • '+kind,detail))
             except discord.HTTPException: log.warning('Security alert delivery failed guild=%s',guild.id)
 
@@ -163,7 +164,7 @@ class Community(commands.Bot):
             elif self.security.observe(member.guild.id,'join'):
                 await self.security_alert(member.guild,'Join burst','Unusual member joins detected. Automatic roles temporarily paused; check new members manually.')
         role=member.guild.get_role(cfg['autorole'])
-        if role and not tracked_reward(self,member.guild.id,role.id) and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
+        if admitted(self,member) and role and not tracked_reward(self,member.guild.id,role.id) and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
         from community_premium import THEMES, language, welcome_destination
@@ -250,13 +251,18 @@ class Community(commands.Bot):
     async def on_message_edit(self,before,after):
         if after.guild and not after.author.bot and before.content != after.content:
             await self.audit(after.guild,'Message edited',f'User {after.author.id}\nBefore: {before.content[:700]}\nAfter: {after.content[:700]}')
+    async def on_guild_channel_create(self,channel):
+        if gate_active(self,channel.guild.id):
+            async with self.locks[('setup',channel.guild.id)]:
+                try: await gate_channel(self,channel)
+                except discord.HTTPException: log.warning('Verification gate could not apply to new channel %s',channel.id)
     async def on_guild_channel_delete(self,channel):
         self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
         self.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(channel.id,))
         self.store.run('DELETE FROM ticket_deletions WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
         self.store.run('DELETE FROM ticket_guests WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
     async def on_voice_state_update(self,member,before,after):
-        if member.bot: return
+        if member.bot or not admitted(self,member): return
         # An interruption or change during a sample invalidates that interval.
         if before.channel!=after.channel or before.self_deaf!=after.self_deaf or before.deaf!=after.deaf or before.self_mute!=after.self_mute or before.mute!=after.mute:
             channels={c.id for c in (before.channel,after.channel) if c}
@@ -274,7 +280,7 @@ class Community(commands.Bot):
                 else:
                     cat=member.guild.get_channel(cfg['voice_category'])
                     if not isinstance(cat,discord.CategoryChannel): return
-                    overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=True,connect=True),
+                    overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=None if gate_active(self,member.guild.id) else True,connect=True),
                                 member.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,manage_channels=True,move_members=True),
                                 member:discord.PermissionOverwrite(view_channel=True,connect=True)}
                     channel=None
@@ -519,7 +525,7 @@ class VoicePanel(ErrorView):
                     await i.response.defer(ephemeral=True)
                     ow=c.overwrites_for(i.guild.default_role)
                     if a in ('lock','unlock'): ow.connect=a=='unlock'
-                    else: ow.view_channel=a=='show'
+                    else: ow.view_channel=(None if gate_active(bot,i.guild_id) else True) if a=='show' else False
                     await c.set_permissions(i.guild.default_role,overwrite=ow)
                     await reply(i,'Tgad ✅ Explicitly permitted members can still join locked rooms.')
                 except ValueError as e: await reply(i,str(e))
@@ -553,6 +559,7 @@ class TicketPanel(ErrorView):
     async def create_ticket(self,i,kind):
         if not i.guild or not isinstance(i.user,discord.Member) or kind not in ('support','report','partnership'):
             return await reply(i,'Invalid ticket request.')
+        if not admitted(self.bot,i.user): return await reply(i,'Complete verification first.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('ticket',i.guild_id,i.user.id)]:
             cfg=self.bot.store.config(i.guild_id)
@@ -640,6 +647,7 @@ class RolePanel(ErrorView):
         for rid,label in roles:
             b=discord.ui.Button(label=label[:80],custom_id=f'role:{rid}',style=discord.ButtonStyle.secondary)
             async def callback(i,role_id=rid):
+                if not admitted(bot,i.user): return await reply(i,'Complete verification first.')
                 r=i.guild.get_role(role_id)
                 if not r or tracked_reward(bot,i.guild_id,r.id) or reserved_staff_role(bot,i.guild,r) or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
                 await i.response.defer(ephemeral=True)
