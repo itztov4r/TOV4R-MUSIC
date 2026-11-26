@@ -16,6 +16,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 from store import Store, level
+from security_monitor import SecurityMonitor
 from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
 from focus_setup import focus_server, restore_server, restore_active_template
 from setup_service import provision_server
@@ -58,7 +59,7 @@ def safe_role(role, guild):
 
 class Community(commands.Bot):
     def __init__(self, store=None):
-        intents=discord.Intents.default(); intents.members=True; intents.message_content=True
+        intents=discord.Intents.default(); intents.members=True; intents.message_content=True; intents.moderation=True
         super().__init__(command_prefix=".", case_insensitive=True, intents=intents,
                          allowed_mentions=discord.AllowedMentions.none())
         self.store=store or Store(os.getenv('DATABASE_PATH','data/community.db'))
@@ -67,6 +68,7 @@ class Community(commands.Bot):
         self.web_runner=None
         self.voice_previous=set()
         self.voice_sample_at=None
+        self.security=SecurityMonitor()
     async def setup_hook(self):
         expected=os.getenv('DISCORD_APPLICATION_ID','').strip()
         if expected and self.application_id != int(expected):
@@ -100,7 +102,7 @@ class Community(commands.Bot):
             await self.tree.sync(guild=target)
     def invite_url(self):
         permissions=discord.Permissions(view_channel=True,send_messages=True,embed_links=True,
-            attach_files=True,read_message_history=True,manage_channels=True,manage_roles=True,
+            attach_files=True,read_message_history=True,manage_channels=True,manage_roles=True,view_audit_log=True,
             manage_messages=True,connect=True,move_members=True,kick_members=True,
             ban_members=True,moderate_members=True)
         return discord.utils.oauth_url(self.application_id,permissions=permissions,
@@ -120,10 +122,32 @@ class Community(commands.Bot):
         if isinstance(c,discord.TextChannel):
             try: await c.send(embed=embed(kind,detail[:3900]))
             except discord.HTTPException: log.warning('Cannot send log to guild %s',guild.id)
+    async def security_alert(self,guild,kind,detail):
+        self.store.event(guild.id,'Security '+kind,detail)
+        channel=guild.get_channel(self.store.config(guild.id)['security_channel'])
+        # Never post security alerts in a public channel.
+        if isinstance(channel,discord.TextChannel) and not channel.permissions_for(guild.default_role).view_channel:
+            try: await channel.send(embed=embed('🛡 TOV4R Security • '+kind,detail))
+            except discord.HTTPException: log.warning('Security alert delivery failed guild=%s',guild.id)
+
+    async def on_audit_log_entry_create(self,entry):
+        guild=entry.guild
+        if not self.store.config(guild.id)['security_enabled']: return
+        if entry.user_id==self.user.id: return
+        if entry.action in (discord.AuditLogAction.channel_delete,discord.AuditLogAction.role_delete,discord.AuditLogAction.ban,discord.AuditLogAction.kick):
+            if self.security.observe(guild.id,'destructive'):
+                await self.security_alert(guild,'Destructive activity','Unusual burst of channel/role deletions or moderation actions. Review Discord audit log. No automatic punishment.')
+
     async def on_member_join(self,member):
         cfg=self.store.config(member.guild.id)
+        if cfg['security_enabled']:
+            if member.bot:
+                if self.security.observe(member.guild.id,'bot'):
+                    await self.security_alert(member.guild,'Bot joined','A bot joined the server. Verify that it was authorized.')
+            elif self.security.observe(member.guild.id,'join'):
+                await self.security_alert(member.guild,'Join burst','Unusual member joins detected. Automatic roles temporarily paused; check new members manually.')
         role=member.guild.get_role(cfg['autorole'])
-        if role and safe_role(role,member.guild):
+        if role and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
         c=member.guild.get_channel(cfg['welcome_channel'])
@@ -158,6 +182,8 @@ class Community(commands.Bot):
             words=[w.strip().casefold() for w in cfg['blocked_words'].split(',') if w.strip()]
             if any(w in message.content.casefold() for w in words): reason='Blocked word'
             if cfg['anti_invites'] and re.search(r'(discord\.gg/|discord(?:app)?\.com/invite/)',message.content,re.I): reason='Discord invite'
+            if cfg['security_enabled'] and (len(set(message.raw_mentions))+len(set(message.raw_role_mentions))>=8 or message.mention_everyone):
+                reason='Mass mentions'
             if cfg['antispam']:
                 key=(message.guild.id,message.author.id); q=self.spam[key]; now=time.monotonic()
                 q.append(now)
@@ -169,6 +195,9 @@ class Community(commands.Bot):
                 if reason.startswith('Spam') and message.author.top_role < message.guild.me.top_role and message.author.id != message.guild.owner_id:
                     try: await message.author.timeout(timedelta(minutes=1),reason=reason)
                     except discord.HTTPException: pass
+                if reason=='Mass mentions':
+                    if self.security.observe(message.guild.id,'mentions'):
+                        await self.security_alert(message.guild,'Mass mentions','A mass-mention message was flagged. Check moderation permissions and review if needed.')
                 await self.audit(message.guild,'AutoMod',f'{message.author.id}: {reason}')
                 return
         if message.content.startswith('.'):
@@ -307,6 +336,7 @@ class Community(commands.Bot):
             try: await self.finish_giveaway(r['message'])
             except discord.HTTPException: log.warning('Giveaway delivery deferred %s',r['message'])
         now=time.monotonic()
+        self.security.prune(now)
         for key in list(self.spam):
             if not self.spam[key] or now-self.spam[key][-1]>60: del self.spam[key]
     @maintenance.before_loop
@@ -562,7 +592,7 @@ class Features(commands.Cog):
         await i.response.send_message(embed=embed('TOV4R • Command center',
             '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce\n'
+            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
@@ -622,6 +652,38 @@ class Features(commands.Cog):
             if v is not None: changes[k]=v
         self.bot.store.update(i.guild_id,changes)
         await reply(i,'Settings saved ✅ Full settings f dashboard.')
+    @app_commands.guild_only()
+    @app_commands.command(description='Enable defensive security monitoring with private alerts')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def security_setup(self,i:discord.Interaction,enabled:bool,alerts:discord.TextChannel|None=None):
+        if alerts and alerts.permissions_for(i.guild.default_role).view_channel:
+            raise ValueError('Choose a private staff-only channel.')
+        if enabled and alerts:
+            p=alerts.permissions_for(i.guild.me)
+            if not (p.view_channel and p.send_messages and p.embed_links):
+                raise ValueError('Bot needs View Channel, Send Messages and Embed Links in the alerts channel.')
+        changes={'security_enabled':enabled}
+        if alerts: changes['security_channel']=alerts.id
+        self.bot.store.update(i.guild_id,changes)
+        self.bot.security.clear(i.guild_id)
+        await reply(i,('Security monitoring enabled. Check /security_status.' if enabled else 'Security monitoring disabled.') + (' Grant View Audit Log to enable destructive activity detection.' if enabled and not i.guild.me.guild_permissions.view_audit_log else ''))
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Show security configuration and recent alerts privately')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def security_status(self,i:discord.Interaction):
+        cfg=self.bot.store.config(i.guild_id)
+        channel=i.guild.get_channel(cfg['security_channel'])
+        usable=isinstance(channel,discord.TextChannel) and not channel.permissions_for(i.guild.default_role).view_channel
+        e=embed('🛡 TOV4R • Security Center')
+        e.add_field(name='Monitoring',value='Enabled' if cfg['security_enabled'] else 'Disabled')
+        e.add_field(name='Audit log access',value='Available' if i.guild.me.guild_permissions.view_audit_log else 'Missing View Audit Log')
+        e.add_field(name='Alerts',value=channel.mention if usable else 'Private status only')
+        e.add_field(name='Auto-role pause',value='Active' if cfg['security_enabled'] and self.bot.security.paused(i.guild_id) else 'Inactive')
+        rows=self.bot.store.all("SELECT kind,at FROM events WHERE guild=? AND kind LIKE 'Security %' ORDER BY id DESC LIMIT 5",(i.guild_id,))
+        e.add_field(name='Recent alerts',value='\n'.join(f"{r['kind']} • <t:{int(r['at'])}:R>" for r in rows) or 'No alerts yet.',inline=False)
+        await i.response.send_message(embed=e,ephemeral=True)
+
     @app_commands.guild_only()
     @app_commands.command(description='Send a voice or ticket control panel here')
     @app_commands.checks.has_permissions(manage_guild=True)

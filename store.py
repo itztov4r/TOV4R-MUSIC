@@ -8,7 +8,7 @@ from pathlib import Path
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60, voice_xp=False)
+                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0)
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
