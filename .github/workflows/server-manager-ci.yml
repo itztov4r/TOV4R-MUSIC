@@ -101,7 +101,8 @@ jobs:
           # Setup is now roles-only. Themed channels are no longer created.
           from bot import Features
           cmds = {cmd.name: cmd for cmd in Features.__cog_app_commands__}
-          assert not cmds['setup'].parameters
-          assert {'setup_modules','restore_layout','level_rewards'} <= set(cmds)
-          print('/setup roles-only and reward commands verified')
+          assert all(not p.required for p in cmds['setup'].parameters)
+          assert {'setup','restore_layout','level_rewards'} <= set(cmds)
+          assert not {'setup_modules','configure','panels','ticket_setup','language','rolepanel','voice_xp','security_setup'} & set(cmds)
+          print('Unified setup and removed duplicate commands verified')
           PY

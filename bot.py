@@ -24,6 +24,7 @@ from level_rewards import TIERS, reward_role, tracked_reward, grant_rewards
 from cosmetics import CATALOG, STARTER_CREDITS
 from community_tools import eligible, save_backup, read_backup, restore_settings
 from localization import tr
+from unified_setup import provision_all
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -79,8 +80,7 @@ class Community(commands.Bot):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
-        from community_premium import CommunityPremium, VerifyView, MultiRoleView
-        await self.add_cog(CommunityPremium(self))
+        from community_premium import VerifyView, MultiRoleView
         self.add_view(VerifyView(self))
         for r in self.store.all('SELECT * FROM community_role_menus'):
             self.add_view(MultiRoleView(self,json.loads(r['roles'])),message_id=r['message'])
@@ -667,7 +667,7 @@ class Features(commands.Cog):
         await i.response.send_message(embed=embed('TOV4R • '+t('command_center'),
             f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
             f'**{t("voice")}**\n{t("voice_help")}\n'
-            f'**{t("staff")}**\n/language · /setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/welcome_setup · /verify_setup · /roles_menu · /rolepanel · /announce · /security_setup · /security_status\n'
+            f'**{t("staff")}**\n/setup · /announce · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority · /ticket_history · /ticket_stats\n/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
@@ -675,22 +675,22 @@ class Features(commands.Cog):
             '/server private_channel (admin confirmation before edits)\n'
             f'**Dashboard**\n{t("dashboard_help")}'),ephemeral=True)
     @app_commands.guild_only()
-    @app_commands.command(description='Choose the server response language')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')])
-    async def language(self,i:discord.Interaction,language:str):
-        self.bot.store.update(i.guild_id,{'language':language})
-        await reply(i,tr(self.bot,i.guild_id,'language_saved'))
-
-    @app_commands.guild_only()
-    @app_commands.command(description='Create staff roles and automatic safe level reward roles')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self,i:discord.Interaction):
+    @app_commands.command(description='Configure all TOV4R modules in one owner-only setup')
+    @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')],theme=[app_commands.Choice(name=x.title(),value=x) for x in ('ruby','ocean','violet','emerald')])
+    async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None):
+        if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            summary=await provision_server(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'])
-            await self.bot.audit(i.guild,'Roles setup',f'By {i.user.id}')
-        await reply(i,tr(self.bot,i.guild_id,'setup_done',new=len(summary['roles_new']),reused=summary['reused']))
+            changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites)] if v is not None}
+            if changes: self.bot.store.update(i.guild_id,changes)
+            if voice_xp is not None or levels is not None:
+                self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
+            result=await provision_all(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'],voice_panel_factory=VoicePanel,ticket_panel_factory=TicketPanel,embed_factory=embed)
+            if security is not None:
+                self.bot.store.update(i.guild_id,{'security_enabled':security})
+                self.bot.security.clear(i.guild_id)
+            await self.bot.audit(i.guild,'Unified setup',f'By {i.user.id}')
+        await reply(i,'✅ Setup complete • Roles: '+str(len(result['roles_new']))+' new • Channels: '+str(len(result['channels_new']))+' new • Voice, tickets, welcome, verification, roles and private logs configured. No existing channels deleted or staff permissions changed. '+(' '.join(result['warnings'])))
 
     @app_commands.guild_only()
     @app_commands.command(description='Show level reward roles and collect eligible rewards')
@@ -706,17 +706,6 @@ class Features(commands.Cog):
         await i.followup.send(embed=e,ephemeral=True)
 
     @app_commands.guild_only()
-    @app_commands.command(description='Create only missing bot service channels for voice, tickets, welcome and logs')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_modules(self,i:discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        async with self.bot.locks[('setup',i.guild_id)]:
-            await provision_modules(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'],
-                voice_panel_factory=VoicePanel,ticket_panel_factory=TicketPanel,
-                role_panel_factory=RolePanel,safe_role_fn=safe_role,embed_factory=embed)
-        await reply(i,'✅ Essential bot modules configured. Existing channels preserved; no themed channels created.')
-
-    @app_commands.guild_only()
     @app_commands.command(description='Restore channels hidden by focused server setup')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def restore_layout(self,i:discord.Interaction):
@@ -729,35 +718,6 @@ class Features(commands.Cog):
                 f"⚠️ Skipped: **{len(status['skipped'])}**. "
                 "No messages or roles were deleted."
             ).replace('\\\\n','\\n'))
-
-    @app_commands.guild_only()
-    @app_commands.command(description='Set channels, support role and optional safe auto-role')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def configure(self,i:discord.Interaction,welcome:discord.TextChannel|None=None,logs:discord.TextChannel|None=None,support:discord.Role|None=None,autorole:discord.Role|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None):
-        changes={}
-        for k,v in [('welcome_channel',welcome),('logs_channel',logs),('support_role',support),('autorole',autorole)]:
-            if v: changes[k]=v.id
-        if support and (tracked_reward(self.bot,i.guild_id,support.id) or self.bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(i.guild_id,support.id))): raise ValueError('Level rewards cannot be staff roles.')
-        if autorole and (tracked_reward(self.bot,i.guild_id,autorole.id) or reserved_staff_role(self.bot,i.guild,autorole) or not safe_role(autorole,i.guild) or (support and support.id==autorole.id)): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
-        for k,v in [('levels',levels),('antispam',antispam),('anti_invites',anti_invites)]:
-            if v is not None: changes[k]=v
-        self.bot.store.update(i.guild_id,changes)
-        await reply(i,'Settings saved ✅ Full settings f dashboard.')
-    @app_commands.guild_only()
-    @app_commands.command(description='Enable defensive security monitoring with private alerts')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def security_setup(self,i:discord.Interaction,enabled:bool,alerts:discord.TextChannel|None=None):
-        if alerts and alerts.permissions_for(i.guild.default_role).view_channel:
-            raise ValueError('Choose a private staff-only channel.')
-        if enabled and alerts:
-            p=alerts.permissions_for(i.guild.me)
-            if not (p.view_channel and p.send_messages and p.embed_links):
-                raise ValueError('Bot needs View Channel, Send Messages and Embed Links in the alerts channel.')
-        changes={'security_enabled':enabled}
-        if alerts: changes['security_channel']=alerts.id
-        self.bot.store.update(i.guild_id,changes)
-        self.bot.security.clear(i.guild_id)
-        await reply(i,('Security monitoring enabled. Check /security_status.' if enabled else 'Security monitoring disabled.') + (' Grant View Audit Log to enable destructive activity detection.' if enabled and not i.guild.me.guild_permissions.view_audit_log else ''))
 
     @app_commands.guild_only()
     @app_commands.command(description='Show security configuration and recent alerts privately')
@@ -775,54 +735,6 @@ class Features(commands.Cog):
         e.add_field(name='Recent alerts',value='\n'.join(f"{r['kind']} • <t:{int(r['at'])}:R>" for r in rows) or 'No alerts yet.',inline=False)
         await i.response.send_message(embed=e,ephemeral=True)
 
-    @app_commands.guild_only()
-    @app_commands.command(description='Send a voice or ticket control panel here')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.choices(kind=[app_commands.Choice(name='Voice',value='voice'),app_commands.Choice(name='Tickets',value='tickets')])
-    async def panels(self,i:discord.Interaction,kind:str):
-        await i.response.defer(ephemeral=True)
-        t=lambda k:tr(self.bot,i.guild_id,k)
-        if kind=='voice':
-            e=embed('🔊 TOV4R • '+t('voice_title'),t('voice_desc'))
-            e.add_field(name='🔐 '+t('privacy'),value=t('voice_privacy'),inline=False)
-            e.add_field(name='⚙️ '+t('manage'),value=t('voice_manage'),inline=False)
-            e.add_field(name='💾 '+t('preferences'),value=t('voice_prefs'),inline=False)
-            await i.channel.send(embed=e,view=VoicePanel(self.bot,i.guild_id))
-        else:
-            await i.channel.send(embed=embed('TOV4R • '+t('tickets'),t('ticket_intro')+'\n'+t('ticket_private')),view=TicketPanel(self.bot,i.guild_id))
-        await reply(i,t('panel_sent'))
-    @app_commands.guild_only()
-    @app_commands.command(description='Configure private support tickets and publish the ticket panel')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def ticket_setup(self,i:discord.Interaction,category:discord.CategoryChannel,support:discord.Role,panel:discord.TextChannel|None=None):
-        if support.is_default() or support.managed or tracked_reward(self.bot,i.guild_id,support.id) or self.bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(i.guild_id,support.id)):
-            raise ValueError('Choose a dedicated staff role, not everyone or a managed role.')
-        if i.user.id!=i.guild.owner_id and support>=i.user.top_role:
-            raise ValueError('Support role must be below your highest role.')
-        target=panel or i.channel
-        if not isinstance(target,discord.TextChannel):
-            raise ValueError('Choose a text channel for the panel.')
-        if not i.guild.me.guild_permissions.manage_channels or not i.guild.me.guild_permissions.manage_roles:
-            raise ValueError('Bot needs Manage Channels and Manage Roles for private tickets.')
-        perms=target.permissions_for(i.guild.me)
-        if not (perms.view_channel and perms.send_messages and perms.embed_links):
-            raise ValueError('Bot needs View Channel, Send Messages and Embed Links in panel channel.')
-        await i.response.defer(ephemeral=True)
-        async with self.bot.locks[('setup',i.guild_id)]:
-            await target.send(embed=embed('🎫 TOV4R • '+tr(self.bot,i.guild_id,'support_center'),tr(self.bot,i.guild_id,'ticket_intro')+'\n'+tr(self.bot,i.guild_id,'ticket_private')),view=TicketPanel(self.bot,i.guild_id))
-            self.bot.store.update(i.guild_id,{'ticket_category':category.id,'support_role':support.id})
-        await reply(i,tr(self.bot,i.guild_id,'ticket_configured'))
-
-    @app_commands.guild_only()
-    @app_commands.command(description='Publish a safe self-service role button')
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def rolepanel(self,i:discord.Interaction,role:discord.Role):
-        if tracked_reward(self.bot,i.guild_id,role.id) or reserved_staff_role(self.bot,i.guild,role) or not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
-        await i.response.defer(ephemeral=True)
-        roles=[(role.id,role.name)]
-        m=await i.channel.send(embed=embed('Choose your role',f'Click to add / remove **{role.name}**.'),view=RolePanel(self.bot,roles))
-        self.bot.store.run('INSERT INTO role_panels VALUES(?,?,?)',(m.id,i.guild_id,json.dumps(roles)))
-        await reply(i,'Role panel sent ✅')
     def profile_embed(self, guild_id, member):
         row=self.bot.store.one('SELECT points FROM xp WHERE guild=? AND user=?',(guild_id,member.id))
         points=row['points'] if row else 0
@@ -925,14 +837,6 @@ class Features(commands.Cog):
             m=r['voice_seconds']//60
             lines.append(f'**{n}.** <@{r["user"]}> — {m//60}h {m%60:02d}m')
         await i.response.send_message(embed=embed('🎙 Voice leaderboard','\n'.join(lines) or 'No eligible voice activity yet.'))
-
-    @app_commands.guild_only()
-    @app_commands.command(description='Enable or disable voice XP (voice state only, no audio recording)')
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def voice_xp(self,i:discord.Interaction,enabled:bool):
-        self.bot.store.update(i.guild_id,{'voice_xp':enabled})
-        self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
-        await reply(i,'Voice XP enabled. 5 XP per eligible minute, max 300 voice XP/day UTC. No recording.' if enabled else 'Voice XP disabled. Existing totals retained.')
 
     @app_commands.guild_only()
     @app_commands.command(description='Real server stats')

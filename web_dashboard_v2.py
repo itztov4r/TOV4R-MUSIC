@@ -26,7 +26,8 @@ from server_templates import (
     TEMPLATES, styled_category_name, styled_channel_name, styled_role_name,
 )
 from focus_setup import candidates, restore_server
-from setup_service import provision_server, SETUP_ROLES, setup_role
+from setup_service import SETUP_ROLES, setup_role
+from unified_setup import provision_all as provision_server
 from level_rewards import TIERS, reward_role
 from store import validate_config
 
@@ -297,13 +298,13 @@ class DashboardV2:
     def _plan(self, guild, theme, focus):
         return {
             "theme": theme, "title": "TOV4R Staff & Community",
-            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES] + [name for _,name,_,_ in TIERS],
-            "new_categories_estimate": 0, "new_channels_estimate": 0,
-            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS),
+            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES] + [name for _,name,_,_ in TIERS] + ["TOV4R Verified","TOV4R • Gaming","TOV4R • Music","TOV4R • Movies"],
+            "new_categories_estimate": 2, "new_channels_estimate": 7,
+            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS) + 4,
             "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
-            "warnings": ["Roles only. No channels are created, edited or deleted. No roles assigned.",
-                         "The server owner must configure Admin and Moderator permissions manually.",
-                         "Use /setup_modules in Discord for optional essential bot channels."]
+            "warnings": ["Upper-bound estimates for missing essential service channels and roles. Existing channels are not deleted or moved.",
+                         "Owner-only setup. Admin and Moderator permissions remain manual; no roles assigned automatically by setup.",
+                         "Existing panel messages may be refreshed. Security alerts use private logs; voice XP remains opt-in."]
         }
 
     async def preview(self, request):
@@ -326,6 +327,8 @@ class DashboardV2:
 
     async def apply(self, request):
         principal, guild = await self._guild(request, write=True)
+        if principal['sid'] is not None and str(principal['user'])!=str(guild.owner_id):
+            raise web.HTTPForbidden(text='Server owner only for full setup')
         data = await self._json(request)
         plan_id = data.get("plan_id")
         if not isinstance(plan_id, str) or len(plan_id) > 128:

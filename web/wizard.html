@@ -66,8 +66,8 @@
         <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Preview the staff, Member and automatic level reward roles. No channels are created or changed.</p></div><span class="step">PREVIEW → APPLY</span></div>
         <div id="themes" class="themes" role="group" aria-label="Server types"></div>
         <div class="wizard-options">
-          <input id="focus" type="checkbox" hidden disabled><b>Roles-only setup</b><p>Staff permissions must be configured manually by the server owner.</p>
-          <p class="safety">🔒 All existing channels and roles are preserved. Use /setup_modules for optional essential bot channels.</p>
+          <input id="focus" type="checkbox" hidden disabled><b>Unified bot setup</b><p>Staff permissions must be configured manually by the server owner.</p>
+          <p class="safety">🔒 All existing channels and roles are preserved. Only missing essential bot channels and roles are created.</p>
         </div>
         <div class="wizard-actions"><button class="action" id="preview" type="button">Generate preview →</button><button class="quiet" id="reset-preview" type="button">Reset</button></div>
         <div id="preview-panel" class="preview-panel" hidden>
@@ -99,8 +99,8 @@
         <div class="head"><div><span class="eyebrow">04 / COMMUNITY MODULES</span><h2>Voice & Tickets</h2><p>Manage your existing modules in Discord. These controls are guides, not web actions.</p></div></div>
         <div class="settings-grid">
           <div class="setting"><span><b>Voice panel</b><small>Publish with /panels kind:Voice. Members can save room preferences.</small></span></div>
-          <div class="setting"><span><b>Ticket panel</b><small>Use /ticket_setup or /panels kind:Tickets. Closed tickets are deleted after 10 seconds, subject to transcript saving.</small></span></div>
-          <div class="setting"><span><b>Private security alerts</b><small>Use /security_setup with a staff-only alerts channel. View Audit Log is needed for destructive-activity alerts.</small></span></div>
+          <div class="setting"><span><b>Ticket panel</b><small>Use /setup to configure and refresh the ticket panel. Closed tickets are deleted after 10 seconds, subject to transcript saving.</small></span></div>
+          <div class="setting"><span><b>Private security alerts</b><small>Use /setup to configure private alerts. View Audit Log is needed for destructive-activity alerts.</small></span></div>
           <div class="setting"><span><b>Community profiles</b><small>/profile, /leaderboard and /voice_top show your server's progression.</small></span></div>
         </div>
       </section>

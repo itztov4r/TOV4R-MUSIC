@@ -153,8 +153,8 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(response.text)
         self.assertIn("plan_id", data)
         self.assertEqual(data["theme"], "movies")
-        self.assertEqual(data["new_channels_estimate"], 0)
-        self.assertEqual(data["new_roles_estimate"], 10)
+        self.assertEqual(data["new_channels_estimate"], 7)
+        self.assertEqual(data["new_roles_estimate"], 14)
         self.assertEqual(self.guild.channels, {})
         self.assertEqual(self.guild.roles, [])
 

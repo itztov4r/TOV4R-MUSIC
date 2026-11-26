@@ -46,6 +46,8 @@ async def start_dashboard(bot):
         return web.json_response({'online':bot.is_ready(),'name':str(bot.user) if bot.user else 'Starting','guilds':guilds})
     async def update(request):
         from bot import safe_role
+        from setup_service import reserved_staff_role
+        from level_rewards import tracked_reward
         import discord
         gid=int(request.match_info['guild']); g=bot.get_guild(gid)
         if not g: raise web.HTTPNotFound()
@@ -55,7 +57,8 @@ async def start_dashboard(bot):
             if k in ('support_role','autorole'):
                 r=g.get_role(v)
                 if not r: raise ValueError(k+': role not found in server')
-                if k=='autorole' and not safe_role(r,g): raise ValueError('Unsafe auto-role')
+                if k=='autorole' and (not safe_role(r,g) or reserved_staff_role(bot,g,r) or tracked_reward(bot,g.id,r.id)): raise ValueError('Unsafe auto-role')
+                if k=='support_role' and (tracked_reward(bot,g.id,r.id) or bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(g.id,r.id))): raise ValueError('Reserved role')
             elif k in ('voice_category','ticket_category','welcome_channel','logs_channel','voice_creator'):
                 expected=discord.CategoryChannel if k.endswith('category') else discord.VoiceChannel if k=='voice_creator' else discord.TextChannel
                 if not isinstance(g.get_channel(v),expected): raise ValueError(k+': invalid channel type')

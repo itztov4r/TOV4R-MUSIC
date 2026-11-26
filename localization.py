@@ -162,9 +162,9 @@ STRINGS = {
     "Tickets configurés ✅"
   ],
   "ticket_missing": [
-    "Ask an admin to run /ticket_setup with a dedicated staff role first.",
-    "Demandez à un admin de lancer /ticket_setup avec un rôle staff dédié.",
-    "Admin khas ydir /ticket_setup m3a rôle staff dédié lwel."
+    "Ask an admin to run /setup with a dedicated staff role first.",
+    "Demandez à un admin de lancer /setup avec un rôle staff dédié.",
+    "Admin khas ydir /setup m3a rôle staff dédié lwel."
   ],
   "ticket_body": [
     "{member}, explain your request here. Do not share passwords or secrets. Closing deletes this channel after 10 seconds. Staff can retrieve a limited text transcript for 7 days.",

@@ -27,6 +27,8 @@ def basic_role(bot,guild,role,*,verification=False):
         if not verification_role(bot,guild.id,role.id): return False
         # Verification role starts with no guild-wide privileges.
         if role.permissions.value: return False
+        safe_channel=reward_permissions(50).value
+        if any(ch.overwrites_for(role).pair()[0].value & ~safe_channel for ch in guild.channels): return False
         cfg=bot.store.config(guild.id)
         if role.id==cfg['support_role'] or role.id==cfg['autorole']: return False
     else:
