@@ -42,6 +42,7 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(":memory:")
         self.guild = FakeGuild()
         self.guild.name = "Only Test Server"
+        self.guild.owner_id = 12345
         self.guild.member_count = 12
         self.guild.members = []
         self.guild.roles = []
@@ -125,6 +126,33 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
             req = self.oauth(guild=self.guild.id, csrf="test-csrf-token")
             _, guild = await self.service._guild(req, write=True)
             self.assertEqual(guild.id, self.guild.id)
+
+    async def test_setup_requires_administrator_or_owner(self):
+        self.new_oauth_session()
+        req = self.oauth(guild=self.guild.id, csrf="test-csrf-token", data={"theme":"movies"})
+        grants = [{"id":str(self.guild.id),"owner":False,"permissions":str(1<<5)}]
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            with self.assertRaises(web.HTTPForbidden):
+                await self.service.preview(req)
+            data=json.loads((await self.service.bootstrap(self.oauth())).text)
+            self.assertFalse(data["guilds"][0]["can_setup"])
+        grants[0]["permissions"]=str(1<<3)
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            data=json.loads((await self.service.preview(req)).text)
+            plan=data["plan_id"]
+            with patch.object(api,"provision_server",new=AsyncMock(return_value={"type":"movies"})) as mocked:
+                result=await self.service.apply(self.oauth(guild=self.guild.id,csrf="test-csrf-token",data={"plan_id":plan}))
+                self.assertTrue(json.loads(result.text)["ok"])
+                mocked.assert_awaited_once()
+            plan=json.loads((await self.service.preview(req)).text)["plan_id"]
+            grants[0]["permissions"]=str(1<<5)
+            with self.assertRaises(web.HTTPForbidden):
+                await self.service.apply(self.oauth(guild=self.guild.id,csrf="test-csrf-token",data={"plan_id":plan}))
+        self.guild.owner_id=87654321
+        grants[0]["owner"]=True
+        grants[0]["permissions"]="0"
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            self.assertIn("plan_id",json.loads((await self.service.preview(req)).text))
 
     async def test_oauth_missing_settings_disables_login_but_keeps_owner(self):
         self.assertFalse(self.service.enabled)

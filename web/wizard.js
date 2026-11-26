@@ -86,7 +86,7 @@ function renderGuild() {
   }
   $('preview').disabled=!g.can_setup;
   $('save-settings').disabled=false;
-  $('restore').disabled=!g.can_setup;
+  $('restore').disabled=false;
   $('guild-name').textContent=g.name;
   $('guild-theme').textContent='Current template: '+(g.type||'community');
   $('stats').replaceChildren();

@@ -689,12 +689,15 @@ class Features(commands.Cog):
             '/server private_channel (admin confirmation before edits)\n'
             f'**Dashboard**\n{t("dashboard_help")}'),ephemeral=True)
     @app_commands.guild_only()
-    @app_commands.command(description='Configure all TOV4R modules in one owner-only setup')
+    @app_commands.command(description='Configure all TOV4R modules (server owner or Administrator)')
     @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')],theme=[app_commands.Choice(name=x.title(),value=x) for x in ('ruby','ocean','violet','emerald')])
     async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None,goodbye:bool|None=None,anti_links:bool|None=None,blocked_words:app_commands.Range[str,1,1500]|None=None,progressive:bool|None=None):
-        if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
+        if i.user.id!=i.guild.owner_id and not i.permissions.administrator: raise ValueError('Server owner or Administrator only.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
+            if i.user.id!=i.guild.owner_id:
+                member=await i.guild.fetch_member(i.user.id)
+                if not member.guild_permissions.administrator: raise ValueError('Administrator permission required.')
             changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites),('goodbye_enabled',goodbye),('anti_links',anti_links),('blocked_words', '' if blocked_words=='clear' else blocked_words),('automod_progressive',progressive)] if v is not None}
             if changes: self.bot.store.update(i.guild_id,changes)
             if voice_xp is not None or levels is not None:

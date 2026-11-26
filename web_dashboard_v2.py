@@ -213,6 +213,7 @@ class DashboardV2:
             access_token=principal["token"]
         )
         permitted = {}
+        principal['setup_guilds'] = set()
         for item in guilds:
             try:
                 allowed = bool(item.get("owner")) or (
@@ -222,9 +223,15 @@ class DashboardV2:
                     guild = self.bot.get_guild(int(item["id"]))
                     if guild is not None:
                         permitted[str(guild.id)] = guild
+                        if str(guild.owner_id)==principal['actor'] or int(item.get('permissions','0')) & ADMINISTRATOR:
+                            principal['setup_guilds'].add(str(guild.id))
             except (ValueError, TypeError, KeyError):
                 continue
         return permitted
+
+    @staticmethod
+    def _can_setup(principal, guild):
+        return principal['sid'] is None or str(guild.id) in principal.get('setup_guilds', set())
 
     def _csrf_check(self, request, principal):
         if principal["sid"] is None:
@@ -265,7 +272,7 @@ class DashboardV2:
                 "bots": sum(m.bot for m in guild.members),
                 "type": cfg["server_type"],
                 "can_setup": bool(
-                    guild.me and guild.me.guild_permissions.manage_roles
+                    self._can_setup(principal, guild) and guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
                 "activity": self.bot.store.all(
@@ -303,12 +310,14 @@ class DashboardV2:
             "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS) + 4,
             "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
             "warnings": ["Upper-bound estimates for missing essential service channels and roles. Existing channels are not deleted or moved.",
-                         "Owner-only setup. Verification gate preserves existing member access via a dedicated role and restricts new members. Admin and Moderator permissions remain manual.",
+                         "Server owner or Administrator setup. Verification gate preserves existing member access via a dedicated role and restricts new members. Admin and Moderator permissions remain manual.",
                          "Existing panel messages may be refreshed. Security alerts use private logs; voice XP remains opt-in."]
         }
 
     async def preview(self, request):
         principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text='Server owner or Administrator only for full setup')
         data = await self._json(request)
         theme = data.get("theme")
         focus = data.get("focus", False)
@@ -327,8 +336,8 @@ class DashboardV2:
 
     async def apply(self, request):
         principal, guild = await self._guild(request, write=True)
-        if principal['sid'] is not None and str(principal['actor'])!=str(guild.owner_id):
-            raise web.HTTPForbidden(text='Server owner only for full setup')
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text='Server owner or Administrator only for full setup')
         data = await self._json(request)
         plan_id = data.get("plan_id")
         if not isinstance(plan_id, str) or len(plan_id) > 128:
@@ -342,7 +351,11 @@ class DashboardV2:
             raise web.HTTPConflict(text="Server changed since preview; review again")
         from bot import VoicePanel, TicketPanel, RolePanel, safe_role, embed
         async with self.bot.locks[("setup", guild.id)]:
-            # Recheck after taking the same lock as the slash setup command.
+            # Refresh authorization after taking the same lock as slash setup.
+            if principal['sid'] is not None:
+                permitted = await self._admin_guilds(principal)
+                if str(guild.id) not in permitted or not self._can_setup(principal, guild):
+                    raise web.HTTPForbidden(text='Administrator permission no longer available')
             if plan["fingerprint"] != self._fingerprint(guild):
                 raise web.HTTPConflict(text="Server changed during setup; preview again")
             try:
