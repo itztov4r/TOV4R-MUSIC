@@ -188,7 +188,7 @@ class Community(commands.Bot):
                 if c.permissions_for(member.guild.me).attach_files:
                     await c.send(embed=e,file=discord.File(data,filename='welcome.png'))
                 else:
-                    e.remove_image()
+                    e.set_image(url=None)
                     await c.send(embed=e)
             except discord.HTTPException: log.exception('Welcome failed')
         await self.audit(member.guild,'Member joined',f'{member} • {member.id}')
