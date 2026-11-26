@@ -42,6 +42,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS rooms(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER);
         CREATE TABLE IF NOT EXISTS tickets(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER,closed INTEGER DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_ticket ON tickets(guild,owner) WHERE closed=0;
+        CREATE TABLE IF NOT EXISTS ticket_deletions(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,due REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS ticket_transcripts(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,body BLOB NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS xp(guild INTEGER,user INTEGER,points INTEGER DEFAULT 0,last REAL DEFAULT 0,PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS warnings(id INTEGER PRIMARY KEY,guild INTEGER,user INTEGER,moderator INTEGER,reason TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,guild INTEGER,kind TEXT,detail TEXT,at REAL);
@@ -94,6 +96,12 @@ class Store:
         before = r['points'] if r else 0
         self.run('INSERT OR REPLACE INTO xp VALUES(?,?,?,?)',(guild,user,before+20,now))
         return level(before+20) if level(before+20)>level(before) else None
+    def queue_ticket_close(self,guild,channel,due):
+        with self.db:
+            changed=self.db.execute('UPDATE tickets SET closed=1 WHERE guild=? AND channel=? AND closed=0',(guild,channel)).rowcount
+            if changed:
+                self.db.execute('INSERT INTO ticket_deletions(channel,guild,due) VALUES(?,?,?)',(channel,guild,due))
+            return bool(changed)
     def event(self, guild, kind, detail):
         self.run('INSERT INTO events(guild,kind,detail,at) VALUES(?,?,?,?)',(guild,kind,detail[:2000],time.time()))
         self.run('DELETE FROM events WHERE guild=? AND id NOT IN (SELECT id FROM events WHERE guild=? ORDER BY id DESC LIMIT 1000)',(guild,guild))

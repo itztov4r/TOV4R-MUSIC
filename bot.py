@@ -30,6 +30,17 @@ def embed(title, description=''):
     e.set_footer(text='Tov4r Bot • Made for your people')
     return e
 
+async def ticket_transcript_bytes(channel):
+    # Bound storage and disclose the limit. Keep message text only, not attachments.
+    parts=[]
+    size=0
+    async for m in channel.history(limit=500,oldest_first=False):
+        line=f'{m.created_at.isoformat()} | {m.author} ({m.author.id})\n{m.content}\n\n'.encode('utf-8')
+        if size+len(line)>1000000: break
+        parts.append(line)
+        size+=len(line)
+    return b'TOV4R ticket transcript - latest 500 messages, max 1 MB; text only.\n\n'+b''.join(reversed(parts))
+
 async def reply(i, text):
     if i.response.is_done(): await i.followup.send(text, ephemeral=True)
     else: await i.response.send_message(text, ephemeral=True)
@@ -173,6 +184,7 @@ class Community(commands.Bot):
     async def on_guild_channel_delete(self,channel):
         self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
         self.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(channel.id,))
+        self.store.run('DELETE FROM ticket_deletions WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
     async def on_voice_state_update(self,member,before,after):
         if member.bot or before.channel == after.channel: return
         cfg=self.store.config(member.guild.id)
@@ -211,8 +223,40 @@ class Community(commands.Bot):
                 except discord.NotFound: pass
                 except discord.HTTPException: return
                 self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
+    async def delete_closed_ticket(self,guild_id,channel_id):
+        async with self.locks[('close',channel_id)]:
+            job=self.store.one('SELECT * FROM ticket_deletions WHERE guild=? AND channel=?',(guild_id,channel_id))
+            if not job or job['due']>time.time(): return
+            g=self.get_guild(guild_id)
+            if not g or g.unavailable: return
+            row=self.store.one('SELECT * FROM tickets WHERE guild=? AND channel=? AND closed=1',(guild_id,channel_id))
+            if not row:
+                self.store.run('DELETE FROM ticket_deletions WHERE channel=?',(channel_id,))
+                return
+            try:
+                c=g.get_channel(channel_id) or await g.fetch_channel(channel_id)
+                if not isinstance(c,discord.TextChannel) or c.guild.id!=guild_id:
+                    return
+                body=await ticket_transcript_bytes(c)
+                self.store.run('INSERT OR REPLACE INTO ticket_transcripts VALUES(?,?,?,?)',(channel_id,guild_id,body,time.time()+7*86400))
+                await c.delete(reason='TOV4R ticket closed: 10-second countdown elapsed')
+            except discord.NotFound:
+                pass
+            except (discord.HTTPException, asyncio.TimeoutError):
+                # Keep channel and retry if history cannot be saved or deletion fails.
+                log.warning('Ticket deletion deferred guild=%s channel=%s',guild_id,channel_id)
+                self.store.run('UPDATE ticket_deletions SET due=? WHERE channel=?',(time.time()+60,channel_id))
+                return
+            self.store.run('DELETE FROM ticket_deletions WHERE channel=?',(channel_id,))
+            await self.audit(g,'Ticket deleted',f'Ticket ID: {channel_id} • staff transcript available for 7 days if saved.')
+
     @tasks.loop(seconds=15)
     async def maintenance(self):
+        for job in self.store.all('SELECT guild,channel FROM ticket_deletions WHERE due<=? LIMIT 20',(time.time(),)):
+            try: await self.delete_closed_ticket(job['guild'],job['channel'])
+            except Exception:
+                log.exception('Ticket cleanup failed')
+        self.store.run('DELETE FROM ticket_transcripts WHERE expires<=?',(time.time(),))
         for r in self.store.all('SELECT * FROM rooms'):
             g=self.get_guild(r['guild'])
             if not g or g.unavailable: continue
@@ -357,28 +401,26 @@ class TicketPanel(ErrorView):
                         role:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)}
             c=await i.guild.create_text_channel(f'ticket-{i.user.id}',category=cat,overwrites=overwrites)
             self.bot.store.run('INSERT INTO tickets(channel,guild,owner) VALUES(?,?,?)',(c.id,i.guild_id,i.user.id))
-            await c.send(embed=embed('Support • TOV4R',f'{i.user.mention}, kteb lmochkil dyalek hna.\nClose kayarchive ticket w kay7yed access dyalek.'),view=CloseTicket(self.bot))
+            await c.send(embed=embed('Support • TOV4R',f'{i.user.mention}, kteb lmochkil dyalek hna.\nClose deletes the channel after 10 seconds. Staff can retrieve a limited text transcript for 7 days.'),view=CloseTicket(self.bot))
             await reply(i,f'Ticket wajd: {c.mention}')
             await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {i.user.id}')
 
 class CloseTicket(ErrorView):
     def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
-    @discord.ui.button(label='🔒 Close & archive',custom_id='ticket:close',style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='🔒 Close ticket',custom_id='ticket:close',style=discord.ButtonStyle.secondary)
     async def close_ticket(self,i,button):
+        if not i.guild or not isinstance(i.channel,discord.TextChannel):
+            return await reply(i,'Ticket channel required.')
         async with self.bot.locks[('close',i.channel_id)]:
-            r=self.bot.store.one('SELECT * FROM tickets WHERE channel=? AND closed=0',(i.channel_id,))
+            r=self.bot.store.one('SELECT * FROM tickets WHERE channel=? AND guild=? AND closed=0',(i.channel_id,i.guild_id))
             if not r: return await reply(i,'Ticket deja msdod.')
             if i.user.id!=r['owner'] and not is_staff(i.user,self.bot.store.config(i.guild_id)): return await reply(i,'Ma3ndekch permission.')
             await i.response.defer(ephemeral=True)
-            # Archive permissions first; never delete user messages.
-            owner=i.guild.get_member(r['owner'])
-            overwrites={target:ow for target,ow in i.channel.overwrites.items() if target.id!=r['owner']}
-            if owner: overwrites[owner]=discord.PermissionOverwrite(view_channel=False,send_messages=False)
-            await i.channel.edit(name=f'closed-{r["owner"]}',overwrites=overwrites)
-            self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(i.channel_id,))
-            await i.channel.send(embed=embed('Ticket archived',f'Closed by {i.user.id}. Staff can use /transcript.'))
-            await self.bot.audit(i.guild,'Ticket closed',f'{i.channel_id} • by {i.user.id}')
-            await reply(i,'Ticket tsed ✅')
+            await i.channel.send(embed=embed('🔒 Ticket closed','This channel will be deleted in **10 seconds**. Staff can retrieve a limited text transcript for 7 days.'))
+            self.bot.store.queue_ticket_close(i.guild_id,i.channel_id,time.time()+10)
+            await reply(i,'Ticket tsed ✅ • deletion in 10 seconds.')
+        await asyncio.sleep(10)
+        await self.bot.delete_closed_ticket(i.guild_id,i.channel_id)
 
 class GiveawayPanel(ErrorView):
     def __init__(self,bot,mid):
@@ -682,16 +724,27 @@ class Features(commands.Cog):
         await i.response.defer(ephemeral=True); await self.bot.finish_giveaway(r['message'],reroll=True)
         await reply(i,'New draw completed ✅')
     @app_commands.guild_only()
-    @app_commands.command(description='Export up to 5000 ticket messages as a text transcript')
-    async def transcript(self,i:discord.Interaction):
-        r=self.bot.store.one('SELECT * FROM tickets WHERE channel=?',(i.channel_id,))
-        if not r or not is_staff(i.user,self.bot.store.config(i.guild_id)): raise ValueError('Staff only, inside a ticket.')
+    @app_commands.command(description='Staff: export ticket text by ID or from the current ticket')
+    async def transcript(self,i:discord.Interaction,ticket_id:str|None=None):
+        if not is_staff(i.user,self.bot.store.config(i.guild_id)):
+            raise ValueError('Staff only.')
+        if ticket_id is not None and (not ticket_id.isdecimal() or len(ticket_id)>19 or int(ticket_id)>9223372036854775807):
+            raise ValueError('Valid ticket ID required.')
+        channel_id=int(ticket_id) if ticket_id else i.channel_id
+        r=self.bot.store.one('SELECT * FROM tickets WHERE guild=? AND channel=?',(i.guild_id,channel_id))
+        if not r: raise ValueError('Ticket not found in this server.')
         await i.response.defer(ephemeral=True)
-        lines=['TOV4R ticket transcript — last 5000 messages; attachment URLs only.']
-        async for m in i.channel.history(limit=5000,oldest_first=False):
-            lines.append(f'{m.created_at.isoformat()} | {m.author} ({m.author.id})\n{m.content}\n'+'\n'.join(a.url for a in m.attachments))
-        data=io.BytesIO('\n\n'.join(lines).encode())
-        await i.followup.send(file=discord.File(data,filename=f'ticket-{i.channel_id}.txt'),ephemeral=True)
+        saved=self.bot.store.one('SELECT body FROM ticket_transcripts WHERE guild=? AND channel=? AND expires>?',(i.guild_id,channel_id,time.time()))
+        if saved:
+            body=saved['body']
+        else:
+            c=i.guild.get_channel(channel_id)
+            if not isinstance(c,discord.TextChannel):
+                return await reply(i,'Transcript unavailable or expired.')
+            if not c.permissions_for(i.user).view_channel:
+                return await reply(i,'No access to this ticket.')
+            body=await ticket_transcript_bytes(c)
+        await i.followup.send(file=discord.File(io.BytesIO(body),filename=f'ticket-{channel_id}.txt'),ephemeral=True)
 
 if __name__=='__main__':
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(name)s: %(message)s')

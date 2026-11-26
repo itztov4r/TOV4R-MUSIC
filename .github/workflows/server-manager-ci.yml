@@ -41,6 +41,8 @@ jobs:
           assert not cog.enabled
           assert not cog.allowed(SimpleNamespace(guild=None))
           PY
+      - name: Test persistent ticket deletion queue
+        run: python -m unittest discover -s tests -p 'test_ticket_close.py' -v
       - name: Validate browser JavaScript syntax
         run: |
           node --check web/wizard.js
