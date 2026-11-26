@@ -9,7 +9,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby')
+                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby', community_channel=0, goodbye_enabled=True)
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
@@ -61,6 +61,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS entries(message INTEGER,user INTEGER,PRIMARY KEY(message,user));
         CREATE TABLE IF NOT EXISTS giveaway_rules(message INTEGER PRIMARY KEY,guild INTEGER NOT NULL,min_level INTEGER NOT NULL,role_id INTEGER NOT NULL,cosmetic TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS community_backups(id INTEGER PRIMARY KEY AUTOINCREMENT,guild INTEGER NOT NULL,created REAL NOT NULL,body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS community_posts(message INTEGER PRIMARY KEY,guild INTEGER NOT NULL,channel INTEGER NOT NULL,author INTEGER NOT NULL,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,choices TEXT NOT NULL,ends REAL NOT NULL DEFAULT 0,closed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS community_votes(message INTEGER NOT NULL,guild INTEGER NOT NULL,user INTEGER NOT NULL,choice INTEGER NOT NULL,PRIMARY KEY(message,user));
+        CREATE TABLE IF NOT EXISTS community_birthdays(guild INTEGER NOT NULL,user INTEGER NOT NULL,month INTEGER NOT NULL,day INTEGER NOT NULL,shared INTEGER NOT NULL DEFAULT 0,last_notice TEXT NOT NULL DEFAULT '',PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS community_role_menus(message INTEGER PRIMARY KEY,guild INTEGER NOT NULL,roles TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS role_panels(message INTEGER PRIMARY KEY,guild INTEGER,roles TEXT);
         CREATE TABLE IF NOT EXISTS template_items(

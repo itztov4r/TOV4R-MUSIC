@@ -299,7 +299,7 @@ class DashboardV2:
         return {
             "theme": theme, "title": "TOV4R Staff & Community",
             "categories": [], "roles": [name for _,name,_ in SETUP_ROLES] + [name for _,name,_,_ in TIERS] + ["TOV4R Verified","TOV4R • Gaming","TOV4R • Music","TOV4R • Movies"],
-            "new_categories_estimate": 2, "new_channels_estimate": 7,
+            "new_categories_estimate": 2, "new_channels_estimate": 8,
             "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS) + 4,
             "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
             "warnings": ["Upper-bound estimates for missing essential service channels and roles. Existing channels are not deleted or moved.",

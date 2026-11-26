@@ -80,6 +80,10 @@ class Community(commands.Bot):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
+        from community_social import CommunitySocial, SocialView
+        await self.add_cog(CommunitySocial(self))
+        for r in self.store.all("SELECT * FROM community_posts WHERE closed=0"):
+            self.add_view(SocialView(self,json.loads(r['choices'])),message_id=r['message'])
         from community_premium import VerifyView, MultiRoleView
         self.add_view(VerifyView(self))
         for r in self.store.all('SELECT * FROM community_role_menus'):
@@ -185,9 +189,16 @@ class Community(commands.Bot):
         await self.audit(member.guild,'Member joined',f'{member} • {member.id}')
     async def on_member_remove(self,member):
         await self.audit(member.guild,'Member left',f'{member} • {member.id}')
-        c=member.guild.get_channel(self.store.config(member.guild.id)['welcome_channel'])
-        if isinstance(c,discord.TextChannel):
-            try: await c.send(embed=embed('Bslama 👋',f'{member.display_name} khrej mn server.'))
+        self.store.run('DELETE FROM community_birthdays WHERE guild=? AND user=?',(member.guild.id,member.id))
+        cfg=self.store.config(member.guild.id)
+        c=member.guild.get_channel(cfg['welcome_channel'])
+        if not member.bot and cfg['goodbye_enabled'] and isinstance(c,discord.TextChannel):
+            from community_premium import THEMES
+            title,body={'fr':('Au revoir 👋','a quitté le serveur.'),'darija':('Bslama 👋','khrej mn server.'),'en':('Goodbye 👋','left the server.')}[cfg['language']]
+            e=embed(title,discord.utils.escape_markdown(member.display_name)+' '+body)
+            e.colour=discord.Colour(THEMES[cfg['welcome_theme']][1])
+            e.set_thumbnail(url=member.display_avatar.url)
+            try: await c.send(embed=e)
             except discord.HTTPException: pass
     async def on_message(self,message):
         if not message.guild or message.author.bot or not isinstance(message.author,discord.Member): return
@@ -344,6 +355,9 @@ class Community(commands.Bot):
 
     @tasks.loop(seconds=15)
     async def maintenance(self):
+        from community_social import social_tick
+        try: await social_tick(self)
+        except Exception: log.exception('Community maintenance failed')
         for job in self.store.all('SELECT guild,channel FROM ticket_deletions WHERE due<=? LIMIT 20',(time.time(),)):
             try: await self.delete_closed_ticket(job['guild'],job['channel'])
             except Exception:
@@ -665,9 +679,9 @@ class Features(commands.Cog):
     async def help_command(self,i:discord.Interaction):
         t=lambda k:tr(self.bot,i.guild_id,k)
         await i.response.send_message(embed=embed('TOV4R • '+t('command_center'),
-            f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
+            f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo · /counters · /suggest · /starboard · /birthday · /community_close\n'
             f'**{t("voice")}**\n{t("voice_help")}\n'
-            f'**{t("staff")}**\n/setup · /announce · /security_status\n'
+            f'**{t("staff")}**\n/setup · /announce · /security_status · /poll · /event · /custom_embed\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority · /ticket_history · /ticket_stats\n/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
@@ -677,11 +691,11 @@ class Features(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(description='Configure all TOV4R modules in one owner-only setup')
     @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')],theme=[app_commands.Choice(name=x.title(),value=x) for x in ('ruby','ocean','violet','emerald')])
-    async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None):
+    async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None,goodbye:bool|None=None):
         if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites)] if v is not None}
+            changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites),('goodbye_enabled',goodbye)] if v is not None}
             if changes: self.bot.store.update(i.guild_id,changes)
             if voice_xp is not None or levels is not None:
                 self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
