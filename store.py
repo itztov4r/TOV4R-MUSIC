@@ -8,7 +8,7 @@ from pathlib import Path
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60)
+                blocked_words='', xp_cooldown=60, voice_xp=False)
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
@@ -45,6 +45,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS ticket_deletions(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,due REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS ticket_transcripts(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,body BLOB NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS xp(guild INTEGER,user INTEGER,points INTEGER DEFAULT 0,last REAL DEFAULT 0,PRIMARY KEY(guild,user));
+        CREATE TABLE IF NOT EXISTS activity(guild INTEGER NOT NULL,user INTEGER NOT NULL,messages INTEGER NOT NULL DEFAULT 0,voice_seconds INTEGER NOT NULL DEFAULT 0,voice_day INTEGER NOT NULL DEFAULT -1,daily_voice_seconds INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS warnings(id INTEGER PRIMARY KEY,guild INTEGER,user INTEGER,moderator INTEGER,reason TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,guild INTEGER,kind TEXT,detail TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS giveaways(message INTEGER PRIMARY KEY,guild INTEGER,channel INTEGER,prize TEXT,ends REAL,count INTEGER,state TEXT DEFAULT 'open',winners TEXT DEFAULT '[]');
@@ -96,6 +97,21 @@ class Store:
         before = r['points'] if r else 0
         self.run('INSERT OR REPLACE INTO xp VALUES(?,?,?,?)',(guild,user,before+20,now))
         return level(before+20) if level(before+20)>level(before) else None
+    def count_message(self,guild,user):
+        self.run('INSERT INTO activity(guild,user,messages) VALUES(?,?,1) ON CONFLICT(guild,user) DO UPDATE SET messages=messages+1',(guild,user))
+    def award_voice(self,guild,user,seconds,now=None):
+        seconds=max(0,min(60,int(seconds)))
+        if not seconds: return 0
+        day=int((time.time() if now is None else now)//86400)
+        with self.db:
+            r=self.db.execute('SELECT voice_day,daily_voice_seconds FROM activity WHERE guild=? AND user=?',(guild,user)).fetchone()
+            before=r['daily_voice_seconds'] if r and r['voice_day']==day else 0
+            after=min(3600,before+seconds)
+            points=5*(after//60-before//60)
+            self.db.execute('INSERT INTO activity(guild,user,voice_seconds,voice_day,daily_voice_seconds) VALUES(?,?,?,?,?) ON CONFLICT(guild,user) DO UPDATE SET voice_seconds=voice_seconds+excluded.voice_seconds,voice_day=excluded.voice_day,daily_voice_seconds=excluded.daily_voice_seconds',(guild,user,seconds,day,after))
+            if points:
+                self.db.execute('INSERT INTO xp(guild,user,points,last) VALUES(?,?,?,0) ON CONFLICT(guild,user) DO UPDATE SET points=points+excluded.points',(guild,user,points))
+        return points
     def queue_ticket_close(self,guild,channel,due):
         with self.db:
             changed=self.db.execute('UPDATE tickets SET closed=1 WHERE guild=? AND channel=? AND closed=0',(guild,channel)).rowcount

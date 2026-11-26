@@ -65,6 +65,8 @@ class Community(commands.Bot):
         self.locks=collections.defaultdict(asyncio.Lock)
         self.spam=collections.defaultdict(collections.deque)
         self.web_runner=None
+        self.voice_previous=set()
+        self.voice_sample_at=None
     async def setup_hook(self):
         expected=os.getenv('DISCORD_APPLICATION_ID','').strip()
         if expected and self.application_id != int(expected):
@@ -86,6 +88,7 @@ class Community(commands.Bot):
         from dashboard import start_dashboard
         self.web_runner=await start_dashboard(self)
         self.maintenance.start()
+        self.voice_activity.start()
     async def sync_public_commands(self):
         # Global commands remain available to every server that installs this app.
         await self.tree.sync()
@@ -104,6 +107,7 @@ class Community(commands.Bot):
                                        scopes=('bot','applications.commands'))
     async def close(self):
         self.maintenance.cancel()
+        self.voice_activity.cancel()
         if self.web_runner: await self.web_runner.cleanup()
         await super().close()
         self.store.db.close()
@@ -171,6 +175,9 @@ class Community(commands.Bot):
             await self.process_commands(message)
             return
         if cfg['levels']:
+            # Do not include private support conversations in activity counters.
+            if not self.store.one('SELECT channel FROM tickets WHERE guild=? AND channel=?',(message.guild.id,message.channel.id)):
+                self.store.count_message(message.guild.id,message.author.id)
             up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
             if up is not None:
                 try: await message.channel.send(embed=embed('Level up!',f'{message.author.mention} wsel level **{up}** 🎉'))
@@ -186,7 +193,12 @@ class Community(commands.Bot):
         self.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(channel.id,))
         self.store.run('DELETE FROM ticket_deletions WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
     async def on_voice_state_update(self,member,before,after):
-        if member.bot or before.channel == after.channel: return
+        if member.bot: return
+        # An interruption or change during a sample invalidates that interval.
+        if before.channel!=after.channel or before.self_deaf!=after.self_deaf or before.deaf!=after.deaf or before.self_mute!=after.self_mute or before.mute!=after.mute:
+            channels={c.id for c in (before.channel,after.channel) if c}
+            self.voice_previous={k for k in self.voice_previous if not (k[0]==member.guild.id and k[2] in channels)}
+        if before.channel == after.channel: return
         cfg=self.store.config(member.guild.id)
         if after.channel and after.channel.id==cfg['voice_creator']:
             async with self.locks[('voice',member.id)]:
@@ -249,6 +261,34 @@ class Community(commands.Bot):
                 return
             self.store.run('DELETE FROM ticket_deletions WHERE channel=?',(channel_id,))
             await self.audit(g,'Ticket deleted',f'Ticket ID: {channel_id} • staff transcript available for 7 days if saved.')
+
+    @tasks.loop(seconds=60)
+    async def voice_activity(self):
+        # Discord voice states only: no voice receive, audio, or recording.
+        if not self.is_ready():
+            self.voice_previous=set()
+            self.voice_sample_at=None
+            return
+        now=time.monotonic()
+        current=set()
+        for guild in self.guilds:
+            if guild.unavailable: continue
+            cfg=self.store.config(guild.id)
+            if not cfg['levels'] or not cfg['voice_xp']: continue
+            for channel in guild.voice_channels:
+                if channel.id in (guild.afk_channel_id,cfg['voice_creator']): continue
+                members=[m for m in channel.members if not m.bot and m.voice and not m.voice.self_deaf and not m.voice.deaf and not m.voice.self_mute and not m.voice.mute]
+                if len(members)<2: continue
+                current.update((guild.id,m.id,channel.id) for m in members)
+        if self.voice_sample_at is not None:
+            elapsed=min(60,max(0,int(round(now-self.voice_sample_at))))
+            for guild_id,user_id,_ in current & self.voice_previous:
+                self.store.award_voice(guild_id,user_id,elapsed)
+        self.voice_previous=current
+        self.voice_sample_at=now
+
+    @voice_activity.before_loop
+    async def before_voice_activity(self): await self.wait_until_ready()
 
     @tasks.loop(seconds=15)
     async def maintenance(self):
@@ -486,9 +526,9 @@ class Features(commands.Cog):
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
         await i.response.send_message(embed=embed('TOV4R • Command center',
-            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /serverinfo\n'
+            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup\n/rolepanel · /announce\n'
+            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
@@ -602,8 +642,16 @@ class Features(commands.Cog):
         e.add_field(name='🏆 Level',value=str(lv))
         e.add_field(name='⚡ XP',value=f'{points:,}')
         e.add_field(name='📊 Rank',value=f'#{rank}' if row else 'Unranked')
+        activity=self.bot.store.one('SELECT messages,voice_seconds FROM activity WHERE guild=? AND user=?',(guild_id,member.id)) or {'messages':0,'voice_seconds':0}
+        minutes=activity['voice_seconds']//60
+        e.add_field(name='💬 Messages',value=f"{activity['messages']:,}")
+        e.add_field(name='🎙 Voice time',value=f'{minutes//60}h {minutes%60:02d}m')
+        badges=['🌱 Member']
+        if lv>=5: badges.append('⭐ Level 5')
+        if lv>=10: badges.append('🏆 Level 10')
+        e.add_field(name='Badges',value=' • '.join(badges))
         e.add_field(name='Next level',value=f'`{"█"*filled+"░"*(10-filled)}`\n{progress:,} / {goal-start:,} XP • {goal-points:,} remaining',inline=False)
-        e.set_footer(text='TOV4R • Server XP only')
+        e.set_footer(text='TOV4R • Server XP • Activity counted since this update')
         return e
 
     @app_commands.guild_only()
@@ -621,6 +669,26 @@ class Features(commands.Cog):
         rows=self.bot.store.all('SELECT user,points FROM xp WHERE guild=? ORDER BY points DESC LIMIT 10',(i.guild_id,))
         text='\n'.join(f'**{n}.** <@{r["user"]}> — {r["points"]} XP • Lv {level(r["points"])}' for n,r in enumerate(rows,1))
         await i.response.send_message(embed=embed('Community leaderboard',text or 'Mazal ma kayn XP.'))
+    @app_commands.guild_only()
+    @app_commands.command(description='Top 10 by eligible voice time on this server')
+    async def voice_top(self,i:discord.Interaction):
+        if not self.bot.store.config(i.guild_id)['voice_xp']:
+            return await reply(i,'Voice activity is not enabled on this server.')
+        rows=self.bot.store.all('SELECT user,voice_seconds FROM activity WHERE guild=? AND voice_seconds>0 ORDER BY voice_seconds DESC,user LIMIT 10',(i.guild_id,))
+        lines=[]
+        for n,r in enumerate(rows,1):
+            m=r['voice_seconds']//60
+            lines.append(f'**{n}.** <@{r["user"]}> — {m//60}h {m%60:02d}m')
+        await i.response.send_message(embed=embed('🎙 Voice leaderboard','\n'.join(lines) or 'No eligible voice activity yet.'))
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Enable or disable voice XP (voice state only, no audio recording)')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voice_xp(self,i:discord.Interaction,enabled:bool):
+        self.bot.store.update(i.guild_id,{'voice_xp':enabled})
+        self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
+        await reply(i,'Voice XP enabled. 5 XP per eligible minute, max 300 voice XP/day UTC. No recording.' if enabled else 'Voice XP disabled. Existing totals retained.')
+
     @app_commands.guild_only()
     @app_commands.command(description='Real server stats')
     async def serverinfo(self,i:discord.Interaction):
