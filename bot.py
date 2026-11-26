@@ -25,6 +25,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 from community_tools import eligible, save_backup, read_backup, restore_settings
 from localization import tr
 from unified_setup import provision_all
+from automod import AutoMod, AutoModCommands, RETENTION
 from verification_gate import active as gate_active, admitted, gate_channel, public_access
 
 load_dotenv()
@@ -75,12 +76,14 @@ class Community(commands.Bot):
         self.voice_previous=set()
         self.voice_sample_at=None
         self.security=SecurityMonitor()
+        self.automod=AutoMod(self)
     async def setup_hook(self):
         expected=os.getenv('DISCORD_APPLICATION_ID','').strip()
         if expected and self.application_id != int(expected):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
+        await self.add_cog(AutoModCommands(self))
         from community_social import CommunitySocial, SocialView
         await self.add_cog(CommunitySocial(self))
         for r in self.store.all("SELECT * FROM community_posts WHERE closed=0"):
@@ -211,29 +214,7 @@ class Community(commands.Bot):
     async def on_message(self,message):
         if not message.guild or message.author.bot or not isinstance(message.author,discord.Member): return
         cfg=self.store.config(message.guild.id)
-        if not message.author.guild_permissions.manage_messages:
-            reason=None
-            words=[w.strip().casefold() for w in cfg['blocked_words'].split(',') if w.strip()]
-            if any(w in message.content.casefold() for w in words): reason='Blocked word'
-            if cfg['anti_invites'] and re.search(r'(discord\.gg/|discord(?:app)?\.com/invite/)',message.content,re.I): reason='Discord invite'
-            if cfg['security_enabled'] and (len(set(message.raw_mentions))+len(set(message.raw_role_mentions))>=8 or message.mention_everyone):
-                reason='Mass mentions'
-            if cfg['antispam']:
-                key=(message.guild.id,message.author.id); q=self.spam[key]; now=time.monotonic()
-                q.append(now)
-                while q and now-q[0]>7: q.popleft()
-                if len(q)>=6: reason='Spam: 6 messages / 7 seconds'
-            if reason:
-                try: await message.delete()
-                except discord.HTTPException: pass
-                if reason.startswith('Spam') and message.author.top_role < message.guild.me.top_role and message.author.id != message.guild.owner_id:
-                    try: await message.author.timeout(timedelta(minutes=1),reason=reason)
-                    except discord.HTTPException: pass
-                if reason=='Mass mentions':
-                    if self.security.observe(message.guild.id,'mentions'):
-                        await self.security_alert(message.guild,'Mass mentions','A mass-mention message was flagged. Check moderation permissions and review if needed.')
-                await self.audit(message.guild,'AutoMod',f'{message.author.id}: {reason}')
-                return
+        if await self.automod.handle(message): return
         if message.content.startswith('.'):
             await self.process_commands(message)
             return
@@ -247,11 +228,12 @@ class Community(commands.Bot):
                 try: await message.channel.send(embed=embed(tr(self,message.guild.id,'level_up'),tr(self,message.guild.id,'level_up_body',member=message.author.mention,level=up)))
                 except discord.HTTPException: pass
     async def on_message_delete(self,message):
+        # Do not copy deleted private messages into general moderation logs.
         if message.guild and not message.author.bot:
-            await self.audit(message.guild,'Message deleted',f'User {message.author.id} • Channel {message.channel.id}\n{message.content[:1500]}')
+            await self.audit(message.guild,'Message deleted',f'User {message.author.id} • Channel {message.channel.id}')
     async def on_message_edit(self,before,after):
-        if after.guild and not after.author.bot and before.content != after.content:
-            await self.audit(after.guild,'Message edited',f'User {after.author.id}\nBefore: {before.content[:700]}\nAfter: {after.content[:700]}')
+        if after.guild and isinstance(after.author,discord.Member) and not after.author.bot and before.content != after.content:
+            await self.automod.handle(after,edited=True)
     async def on_guild_channel_create(self,channel):
         if gate_active(self,channel.guild.id):
             async with self.locks[('setup',channel.guild.id)]:
@@ -387,6 +369,8 @@ class Community(commands.Bot):
             except discord.HTTPException: log.warning('Giveaway delivery deferred %s',r['message'])
         now=time.monotonic()
         self.security.prune(now)
+        self.automod.prune(now)
+        self.store.run('DELETE FROM automod_incidents WHERE at<=?',(time.time()-RETENTION,))
         for key in list(self.spam):
             if not self.spam[key] or now-self.spam[key][-1]>60: del self.spam[key]
     @maintenance.before_loop
@@ -698,7 +682,7 @@ class Features(commands.Cog):
             f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo · /counters · /suggest · /starboard · /birthday · /community_close\n'
             f'**{t("voice")}**\n{t("voice_help")}\n'
             f'**{t("staff")}**\n/setup · /announce · /security_status · /poll · /event · /custom_embed\n'
-            '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
+            '/mod_history · /mod_dismiss · /warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority · /ticket_history · /ticket_stats\n/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
             '/server harden_role · /server remove_role · /server move_channel\n'
@@ -707,11 +691,11 @@ class Features(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(description='Configure all TOV4R modules in one owner-only setup')
     @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')],theme=[app_commands.Choice(name=x.title(),value=x) for x in ('ruby','ocean','violet','emerald')])
-    async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None,goodbye:bool|None=None):
+    async def setup(self,i:discord.Interaction,language:str|None=None,theme:str|None=None,welcome_message:app_commands.Range[str,1,1500]|None=None,voice_xp:bool|None=None,security:bool|None=None,levels:bool|None=None,antispam:bool|None=None,anti_invites:bool|None=None,goodbye:bool|None=None,anti_links:bool|None=None,blocked_words:app_commands.Range[str,1,1500]|None=None,progressive:bool|None=None):
         if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites),('goodbye_enabled',goodbye)] if v is not None}
+            changes={k:v for k,v in [('language',language),('welcome_theme',theme),('welcome_text',welcome_message),('voice_xp',voice_xp),('levels',levels),('antispam',antispam),('anti_invites',anti_invites),('goodbye_enabled',goodbye),('anti_links',anti_links),('blocked_words', '' if blocked_words=='clear' else blocked_words),('automod_progressive',progressive)] if v is not None}
             if changes: self.bot.store.update(i.guild_id,changes)
             if voice_xp is not None or levels is not None:
                 self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}

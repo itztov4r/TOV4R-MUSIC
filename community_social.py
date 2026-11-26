@@ -15,6 +15,7 @@ LABELS={"suggestion":["👍 Support","👎 Oppose"],"event":["Going","Not going"
 def check_post_content(cfg,text):
     words=[w.strip().casefold() for w in cfg["blocked_words"].split(",") if w.strip()]
     if any(w in text.casefold() for w in words): raise ValueError("Post contains a filtered word.")
+    if cfg.get("anti_links") and re.search(r"(?:https?://|www\.)\S+",text,re.I): raise ValueError("External links are disabled on this server.")
     if cfg["anti_invites"] and re.search(r"(discord\.gg/|discord(?:app)?\.com/invite/)",text,re.I):
         raise ValueError("Discord invites are disabled on this server.")
 

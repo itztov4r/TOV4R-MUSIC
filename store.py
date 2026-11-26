@@ -9,7 +9,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby', community_channel=0, goodbye_enabled=True)
+                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby', community_channel=0, goodbye_enabled=True, anti_links=False, automod_progressive=False)
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
@@ -55,6 +55,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS cosmetic_wallet(guild INTEGER NOT NULL,user INTEGER NOT NULL,credits INTEGER NOT NULL CHECK(credits>=0),theme TEXT NOT NULL DEFAULT '',badge TEXT NOT NULL DEFAULT '',PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS cosmetic_inventory(guild INTEGER NOT NULL,user INTEGER NOT NULL,item TEXT NOT NULL,PRIMARY KEY(guild,user,item));
         CREATE TABLE IF NOT EXISTS activity(guild INTEGER NOT NULL,user INTEGER NOT NULL,messages INTEGER NOT NULL DEFAULT 0,voice_seconds INTEGER NOT NULL DEFAULT 0,voice_day INTEGER NOT NULL DEFAULT -1,daily_voice_seconds INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(guild,user));
+        CREATE TABLE IF NOT EXISTS automod_incidents(id INTEGER PRIMARY KEY,guild INTEGER NOT NULL,user INTEGER NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,reason TEXT NOT NULL,at REAL NOT NULL,action TEXT NOT NULL,dismissed INTEGER NOT NULL DEFAULT 0,UNIQUE(guild,message));
+        CREATE INDEX IF NOT EXISTS automod_member ON automod_incidents(guild,user,at);
         CREATE TABLE IF NOT EXISTS warnings(id INTEGER PRIMARY KEY,guild INTEGER,user INTEGER,moderator INTEGER,reason TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,guild INTEGER,kind TEXT,detail TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS giveaways(message INTEGER PRIMARY KEY,guild INTEGER,channel INTEGER,prize TEXT,ends REAL,count INTEGER,state TEXT DEFAULT 'open',winners TEXT DEFAULT '[]');
