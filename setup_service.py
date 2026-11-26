@@ -103,7 +103,7 @@ SETUP_ROLES = (("admin", "TOV4R Admin", 0xef3340),
 def setup_role(bot, guild, key, name):
     if key == "support":
         role = guild.get_role(bot.store.config(guild.id)["support_role"])
-        if role and not role.managed and role.id != guild.default_role.id and not tracked_reward(bot,guild.id,role.id):
+        if role and not role.managed and role.id != guild.default_role.id and not tracked_reward(bot,guild.id,role.id) and not bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template IN ('__verification__','__verification_gate__') AND kind='role' AND discord_id=?",(guild.id,role.id)):
             return role
     tracked = bot.store.one("SELECT discord_id FROM template_items WHERE guild=? AND template=? AND item_key=?",
                             (guild.id, "__staff_setup__", key))

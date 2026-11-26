@@ -4,6 +4,7 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
+from verification_gate import admitted
 
 def staff(member, cfg):
     return member.guild_permissions.manage_guild or any(r.id==cfg['support_role'] and not r.is_default() for r in member.roles)
@@ -53,6 +54,7 @@ class TicketPremium(commands.Cog):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('close',i.channel_id)]:
             r=check_ticket(self.bot,i)
+            if not admitted(self.bot,member): raise ValueError('Member must complete verification first.')
             if r['kind']=='report': raise ValueError("Report tickets cannot invite additional members.")
             if member.bot or member.id==r['owner'] or i.channel.permissions_for(member).view_channel or member in i.channel.overwrites:
                 raise ValueError("Choose a human member without existing access or overrides.")

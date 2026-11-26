@@ -58,7 +58,7 @@ async def start_dashboard(bot):
                 r=g.get_role(v)
                 if not r: raise ValueError(k+': role not found in server')
                 if k=='autorole' and (not safe_role(r,g) or reserved_staff_role(bot,g,r) or tracked_reward(bot,g.id,r.id)): raise ValueError('Unsafe auto-role')
-                if k=='support_role' and (tracked_reward(bot,g.id,r.id) or bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(g.id,r.id))): raise ValueError('Reserved role')
+                if k=='support_role' and (tracked_reward(bot,g.id,r.id) or bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template IN ('__verification__','__verification_gate__') AND kind='role' AND discord_id=?",(g.id,r.id))): raise ValueError('Reserved role')
             elif k in ('voice_category','ticket_category','welcome_channel','logs_channel','voice_creator'):
                 expected=discord.CategoryChannel if k.endswith('category') else discord.VoiceChannel if k=='voice_creator' else discord.TextChannel
                 if not isinstance(g.get_channel(v),expected): raise ValueError(k+': invalid channel type')

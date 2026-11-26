@@ -196,6 +196,7 @@ class Community(commands.Bot):
     async def on_member_remove(self,member):
         await self.audit(member.guild,'Member left',f'{member} • {member.id}')
         self.store.run('DELETE FROM community_birthdays WHERE guild=? AND user=?',(member.guild.id,member.id))
+        self.store.run('DELETE FROM verification_migration WHERE guild=? AND user=?',(member.guild.id,member.id))
         cfg=self.store.config(member.guild.id)
         from community_premium import welcome_destination
         c=welcome_destination(self,member.guild)
@@ -465,6 +466,7 @@ class RoomUserSelect(discord.ui.UserSelect):
             c,r=await owned_room(self.bot,i)
             target=i.guild.get_member(self.values[0].id)
             if not target or target.bot or target.id==i.user.id: raise ValueError('Choose another human member.')
+            if not admitted(self.bot,target): raise ValueError('Member must complete verification first.')
             await i.response.defer(ephemeral=True)
             if self.action=='transfer':
                 if not target.voice or target.voice.channel!=c: raise ValueError('Member khas ykon f room.')
@@ -750,7 +752,7 @@ class Features(commands.Cog):
     async def security_status(self,i:discord.Interaction):
         cfg=self.bot.store.config(i.guild_id)
         channel=i.guild.get_channel(cfg['security_channel'])
-        usable=isinstance(channel,discord.TextChannel) and not channel.permissions_for(i.guild.default_role).view_channel
+        usable=isinstance(channel,discord.TextChannel) and not public_access(self.bot,i.guild,channel)
         e=embed('🛡 TOV4R • Security Center')
         e.add_field(name='Monitoring',value='Enabled' if cfg['security_enabled'] else 'Disabled')
         e.add_field(name='Audit log access',value='Available' if i.guild.me.guild_permissions.view_audit_log else 'Missing View Audit Log')
