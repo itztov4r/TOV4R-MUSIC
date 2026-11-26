@@ -9,7 +9,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0)
+                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en')
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
@@ -29,6 +29,7 @@ def validate_config(changes):
             if k == 'xp_cooldown' and not 15 <= v <= 3600: raise ValueError('Cooldown: 15–3600 seconds')
         else:
             if not isinstance(v, str) or len(v) > 1500: raise ValueError(k + ': invalid text')
+        if k == 'language' and v not in ('en','fr','darija'): raise ValueError('Unsupported language')
         out[k] = v
     return out
 

@@ -23,6 +23,7 @@ from setup_service import provision_server, provision_modules, reserved_staff_ro
 from level_rewards import TIERS, reward_role, tracked_reward, grant_rewards
 from cosmetics import CATALOG, STARTER_CREDITS
 from community_tools import eligible, save_backup, read_backup, restore_settings
+from localization import tr
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -213,7 +214,7 @@ class Community(commands.Bot):
             up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
             await grant_rewards(self,message.author)
             if up is not None:
-                try: await message.channel.send(embed=embed('Level up!',f'{message.author.mention} wsel level **{up}** 🎉'))
+                try: await message.channel.send(embed=embed(tr(self,message.guild.id,'level_up'),tr(self,message.guild.id,'level_up_body',member=message.author.mention,level=up)))
                 except discord.HTTPException: pass
     async def on_message_delete(self,message):
         if message.guild and not message.author.bot:
@@ -443,11 +444,11 @@ class RoomUserSelect(discord.ui.UserSelect):
         except ValueError as e: await reply(i,str(e))
 
 class VoicePanel(ErrorView):
-    def __init__(self,bot):
+    def __init__(self,bot,guild_id=None):
         super().__init__(timeout=None); self.bot=bot
         for action,label in [('lock','🔒 Lock'),('unlock','🔓 Unlock'),('hide','👻 Hide'),('show','👁 Show'),('rename','✏ Rename'),('limit','👥 Limit'),('permit','✅ Permit'),('kick','⛔ Kick / block'),('transfer','👑 Transfer'),('claim','🙋 Claim'),('info','ℹ️ Room info'),('save','💾 Save room'),('forget','🗑 Reset saved')]:
             style=discord.ButtonStyle.primary if action in ('rename','limit','info','save') else discord.ButtonStyle.danger if action in ('kick','forget') else discord.ButtonStyle.secondary
-            b=discord.ui.Button(label=label,custom_id='voice:'+action,style=style)
+            b=discord.ui.Button(label=tr(bot,guild_id,'voice_'+action),custom_id='voice:'+action,style=style)
             async def action_handler(i,a=action):
                 try:
                     if a=='claim':
@@ -499,7 +500,13 @@ class VoicePanel(ErrorView):
             b.callback=callback; self.add_item(b)
 
 class TicketPanel(ErrorView):
-    def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
+    def __init__(self,bot,guild_id=None):
+        super().__init__(timeout=None); self.bot=bot
+        self.open_ticket.label='🎫 '+tr(bot,guild_id,'open_ticket')
+        self.select_ticket.placeholder=tr(bot,guild_id,'choose_ticket')
+        for option in self.select_ticket.options:
+            option.label=tr(bot,guild_id,option.value)
+            option.description=tr(bot,guild_id,option.value+'_desc')
     @discord.ui.button(label='🎫 Open ticket',custom_id='ticket:open',style=discord.ButtonStyle.danger)
     async def open_ticket(self,i,button):
         await self.create_ticket(i,'support')
@@ -518,10 +525,10 @@ class TicketPanel(ErrorView):
         async with self.bot.locks[('ticket',i.guild_id,i.user.id)]:
             cfg=self.bot.store.config(i.guild_id)
             existing=self.bot.store.one('SELECT * FROM tickets WHERE guild=? AND owner=? AND closed=0',(i.guild_id,i.user.id))
-            if existing and i.guild.get_channel(existing['channel']): return await reply(i,f'Ticket dyalek: <#{existing["channel"]}>')
+            if existing and i.guild.get_channel(existing['channel']): return await reply(i,tr(self.bot,i.guild_id,'ticket_exists',channel=f'<#{existing["channel"]}>'))
             if existing: self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(existing['channel'],))
             cat=i.guild.get_channel(cfg['ticket_category']); role=i.guild.get_role(cfg['support_role'])
-            if not isinstance(cat,discord.CategoryChannel) or not role or role.is_default() or role.managed: return await reply(i,'Admin khas ydir /ticket_setup lwel m3a dedicated support role.')
+            if not isinstance(cat,discord.CategoryChannel) or not role or role.is_default() or role.managed: return await reply(i,tr(self.bot,i.guild_id,'ticket_missing'))
             overwrites={i.guild.default_role:discord.PermissionOverwrite(view_channel=False),
                         i.guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,manage_channels=True),
                         i.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,attach_files=True),
@@ -529,15 +536,19 @@ class TicketPanel(ErrorView):
             c=await i.guild.create_text_channel(f'{kind}-{i.user.id}',category=cat,overwrites=overwrites,reason='TOV4R private ticket')
             self.bot.store.run('INSERT INTO tickets(channel,guild,owner) VALUES(?,?,?)',(c.id,i.guild_id,i.user.id))
             self.bot.store.set_ticket_kind(i.guild_id,c.id,kind)
-            e=embed(f'🎫 {kind.title()} • TOV4R',f'{i.user.mention}, explain your request here.\nDo not share passwords or secrets.\nClose deletes the channel after 10 seconds. Staff can retrieve a limited text transcript for 7 days.')
-            e.add_field(name='Status',value='Open • Waiting for staff')
-            e.add_field(name='Ticket ID',value=str(c.id))
-            await c.send(embed=e,view=CloseTicket(self.bot))
-            await reply(i,f'Ticket wajd: {c.mention}')
+            t=lambda k,**v:tr(self.bot,i.guild_id,k,**v)
+            e=embed(f'🎫 {t(kind)} • TOV4R',t('ticket_body',member=i.user.mention))
+            e.add_field(name=t('status'),value=t('waiting'))
+            e.add_field(name=t('ticket_id'),value=str(c.id))
+            await c.send(embed=e,view=CloseTicket(self.bot,i.guild_id))
+            await reply(i,t('ticket_ready',channel=c.mention))
             await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {kind} • {i.user.id}')
 
 class CloseTicket(ErrorView):
-    def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
+    def __init__(self,bot,guild_id=None):
+        super().__init__(timeout=None); self.bot=bot
+        self.claim_button.label=tr(bot,guild_id,'claim_ticket')
+        self.close_ticket.label='🔒 '+tr(bot,guild_id,'close_ticket')
     @discord.ui.button(label='Claim ticket',emoji='🙋',custom_id='ticket:claim:v2',style=discord.ButtonStyle.primary)
     async def claim_button(self,i,button):
         if not i.guild or not isinstance(i.channel,discord.TextChannel):
@@ -552,9 +563,9 @@ class CloseTicket(ErrorView):
             if previous and previous['claimed_by']:
                 return await reply(i,f'Ticket already claimed by <@{claimant}>.')
             if claimant!=i.user.id: return await reply(i,f'Ticket already claimed by <@{claimant}>.')
-            await i.channel.send(embed=embed('🙋 Ticket claimed',f'Staff member <@{claimant}> is handling this request.'))
+            await i.channel.send(embed=embed('🙋 '+tr(self.bot,i.guild_id,'ticket_claimed'),tr(self.bot,i.guild_id,'claimed_by',id=claimant)))
             await self.bot.audit(i.guild,'Ticket claimed',f'{i.channel_id} • {claimant}')
-            await reply(i,'Ticket claimed ✅')
+            await reply(i,tr(self.bot,i.guild_id,'ticket_claimed')+' ✅')
 
     @discord.ui.button(label='🔒 Close ticket',custom_id='ticket:close',style=discord.ButtonStyle.secondary)
     async def close_ticket(self,i,button):
@@ -565,9 +576,9 @@ class CloseTicket(ErrorView):
             if not r: return await reply(i,'Ticket deja msdod.')
             if i.user.id!=r['owner'] and not is_staff(i.user,self.bot.store.config(i.guild_id)): return await reply(i,'Ma3ndekch permission.')
             await i.response.defer(ephemeral=True)
-            await i.channel.send(embed=embed('🔒 Ticket closed','This channel will be deleted in **10 seconds**. Staff can retrieve a limited text transcript for 7 days.'))
+            await i.channel.send(embed=embed('🔒 '+tr(self.bot,i.guild_id,'ticket_closed'),tr(self.bot,i.guild_id,'closed_body')))
             self.bot.store.queue_ticket_close(i.guild_id,i.channel_id,time.time()+10)
-            await reply(i,'Ticket tsed ✅ • deletion in 10 seconds.')
+            await reply(i,tr(self.bot,i.guild_id,'ticket_closed')+' ✅')
         await asyncio.sleep(10)
         await self.bot.delete_closed_ticket(i.guild_id,i.channel_id)
 
@@ -638,16 +649,25 @@ class Features(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
-        await i.response.send_message(embed=embed('TOV4R • Command center',
-            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
-            '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
+        t=lambda k:tr(self.bot,i.guild_id,k)
+        await i.response.send_message(embed=embed('TOV4R • '+t('command_center'),
+            f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
+            f'**{t("voice")}**\n{t("voice_help")}\n'
+            f'**{t("staff")}**\n/language · /setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
-            '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
+            f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
             '/server harden_role · /server remove_role · /server move_channel\n'
             '/server private_channel (admin confirmation before edits)\n'
-            '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
+            f'**Dashboard**\n{t("dashboard_help")}'),ephemeral=True)
+    @app_commands.guild_only()
+    @app_commands.command(description='Choose the server response language')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.choices(language=[app_commands.Choice(name='English',value='en'),app_commands.Choice(name='Français',value='fr'),app_commands.Choice(name='Darija',value='darija')])
+    async def language(self,i:discord.Interaction,language:str):
+        self.bot.store.update(i.guild_id,{'language':language})
+        await reply(i,tr(self.bot,i.guild_id,'language_saved'))
+
     @app_commands.guild_only()
     @app_commands.command(description='Create staff roles and automatic safe level reward roles')
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -656,18 +676,19 @@ class Features(commands.Cog):
         async with self.bot.locks[('setup',i.guild_id)]:
             summary=await provision_server(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'])
             await self.bot.audit(i.guild,'Roles setup',f'By {i.user.id}')
-        await reply(i,'✅ Roles setup complete. New: '+str(len(summary['roles_new']))+' • Reused: '+str(summary['reused'])+'. No channels created or removed. Admin/Moderator rights must be configured manually by the server owner. Staff roles are never assigned automatically; XP rewards are granted to eligible members.')
+        await reply(i,tr(self.bot,i.guild_id,'setup_done',new=len(summary['roles_new']),reused=summary['reused']))
 
     @app_commands.guild_only()
     @app_commands.command(description='Show level reward roles and collect eligible rewards')
     async def level_rewards(self,i:discord.Interaction):
         await i.response.defer(ephemeral=True)
         granted=await grant_rewards(self.bot,i.user)
-        e=embed('TOV4R • Level rewards','Rewards are optional community perks, not staff access. Use /setup to install them.')
+        t=lambda k:tr(self.bot,i.guild_id,k)
+        e=embed('TOV4R • '+t('rewards'),t('rewards_desc'))
         for n,name,_,_ in TIERS:
             role=reward_role(self.bot,i.guild,n)
-            e.add_field(name=f'Level {n}',value=role.mention if role else name+' (not installed)',inline=True)
-        if granted: e.add_field(name='Rewards received',value=', '.join(granted),inline=False)
+            e.add_field(name=f'{t("level")} {n}',value=role.mention if role else name+' ('+t('not_installed')+')',inline=True)
+        if granted: e.add_field(name=t('received'),value=', '.join(granted),inline=False)
         await i.followup.send(embed=e,ephemeral=True)
 
     @app_commands.guild_only()
@@ -746,15 +767,16 @@ class Features(commands.Cog):
     @app_commands.choices(kind=[app_commands.Choice(name='Voice',value='voice'),app_commands.Choice(name='Tickets',value='tickets')])
     async def panels(self,i:discord.Interaction,kind:str):
         await i.response.defer(ephemeral=True)
+        t=lambda k:tr(self.bot,i.guild_id,k)
         if kind=='voice':
-            e=embed('🔊 TOV4R • Voice Control','Join the voice creator channel to create your own temporary room. Control it using the buttons below.')
-            e.add_field(name='🔐 Privacy',value='Lock / Unlock • Hide / Show',inline=False)
-            e.add_field(name='⚙️ Manage',value='Rename / Limit • Permit / Kick & block • Transfer / Claim',inline=False)
-            e.add_field(name='💾 Preferences',value='Save room remembers your name and limit. Reset saved clears those preferences. Room info shows your current room.',inline=False)
-            await i.channel.send(embed=e,view=VoicePanel(self.bot))
+            e=embed('🔊 TOV4R • '+t('voice_title'),t('voice_desc'))
+            e.add_field(name='🔐 '+t('privacy'),value=t('voice_privacy'),inline=False)
+            e.add_field(name='⚙️ '+t('manage'),value=t('voice_manage'),inline=False)
+            e.add_field(name='💾 '+t('preferences'),value=t('voice_prefs'),inline=False)
+            await i.channel.send(embed=e,view=VoicePanel(self.bot,i.guild_id))
         else:
-            await i.channel.send(embed=embed('TOV4R • tickets','Choose Support, Report or Partnership below.'),view=TicketPanel(self.bot))
-        await reply(i,'Panel sent ✅')
+            await i.channel.send(embed=embed('TOV4R • '+t('tickets'),t('ticket_intro')+'\n'+t('ticket_private')),view=TicketPanel(self.bot,i.guild_id))
+        await reply(i,t('panel_sent'))
     @app_commands.guild_only()
     @app_commands.command(description='Configure private support tickets and publish the ticket panel')
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -773,9 +795,9 @@ class Features(commands.Cog):
             raise ValueError('Bot needs View Channel, Send Messages and Embed Links in panel channel.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            await target.send(embed=embed('🎫 TOV4R • Support Center','Choose Support, Report or Partnership from the menu below.\nTickets are private to you and authorized staff (Discord administrators retain access).\nPlease do not share passwords or other secrets.'),view=TicketPanel(self.bot))
+            await target.send(embed=embed('🎫 TOV4R • '+tr(self.bot,i.guild_id,'support_center'),tr(self.bot,i.guild_id,'ticket_intro')+'\n'+tr(self.bot,i.guild_id,'ticket_private')),view=TicketPanel(self.bot,i.guild_id))
             self.bot.store.update(i.guild_id,{'ticket_category':category.id,'support_role':support.id})
-        await reply(i,'Ticket system configured ✅')
+        await reply(i,tr(self.bot,i.guild_id,'ticket_configured'))
 
     @app_commands.guild_only()
     @app_commands.command(description='Publish a safe self-service role button')
@@ -796,56 +818,59 @@ class Features(commands.Cog):
         progress=points-start
         filled=min(10,max(0,progress*10//(goal-start)))
         rank=self.bot.store.one('SELECT COUNT(*) n FROM xp WHERE guild=? AND points>?',(guild_id,points))['n']+1
-        e=embed('✦ TOV4R • Member profile',discord.utils.escape_markdown(member.display_name))
+        t=lambda k:tr(self.bot,guild_id,k)
+        e=embed('✦ TOV4R • '+t('profile'),discord.utils.escape_markdown(member.display_name))
         cosmetics=self.bot.store.cosmetic_profile(guild_id,member.id)
         theme=CATALOG.get(cosmetics['theme'])
         if theme and theme[1]=='theme': e.colour=discord.Colour(theme[3])
         badge=CATALOG.get(cosmetics['badge'])
         e.set_thumbnail(url=member.display_avatar.url)
-        e.add_field(name='🏆 Level',value=str(lv))
+        e.add_field(name='🏆 '+t('level'),value=str(lv))
         e.add_field(name='⚡ XP',value=f'{points:,}')
-        e.add_field(name='📊 Rank',value=f'#{rank}' if row else 'Unranked')
+        e.add_field(name='📊 '+t('rank'),value=f'#{rank}' if row else t('unranked'))
         activity=self.bot.store.one('SELECT messages,voice_seconds FROM activity WHERE guild=? AND user=?',(guild_id,member.id)) or {'messages':0,'voice_seconds':0}
         minutes=activity['voice_seconds']//60
-        e.add_field(name='💬 Messages',value=f"{activity['messages']:,}")
-        e.add_field(name='🎙 Voice time',value=f'{minutes//60}h {minutes%60:02d}m')
-        badges=['🌱 Member']
-        if lv>=5: badges.append('⭐ Level 5')
-        if lv>=10: badges.append('🏆 Level 10')
+        e.add_field(name='💬 '+t('messages'),value=f"{activity['messages']:,}")
+        e.add_field(name='🎙 '+t('voice_time'),value=f'{minutes//60}h {minutes%60:02d}m')
+        badges=['🌱 '+t('member')]
+        if lv>=5: badges.append('⭐ '+t('level')+' 5')
+        if lv>=10: badges.append('🏆 '+t('level')+' 10')
         if badge and badge[1]=='badge': badges.append(badge[3])
-        e.add_field(name='Badges',value=' • '.join(badges))
-        e.add_field(name='Next level',value=f'`{"█"*filled+"░"*(10-filled)}`\n{progress:,} / {goal-start:,} XP • {goal-points:,} remaining',inline=False)
-        e.set_footer(text='TOV4R • Server XP • Activity counted since this update')
+        e.add_field(name=t('badges'),value=' • '.join(badges))
+        e.add_field(name=t('next_level'),value=f'`{"█"*filled+"░"*(10-filled)}`\n{progress:,} / {goal-start:,} XP • {goal-points:,} {t("remaining")}',inline=False)
+        e.set_footer(text=t('profile_footer'))
         return e
 
     @app_commands.guild_only()
     @app_commands.command(description='Browse free virtual-credit profile cosmetics')
     async def shop(self,i:discord.Interaction):
         account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
-        e=embed('TOV4R • Cosmetic Shop',f"Balance: **{account['credits']} TOV Credits**. Every member receives {STARTER_CREDITS} free credits, enough for all current items. No real money or staff permissions.")
+        t=lambda k,**v:tr(self.bot,i.guild_id,k,**v)
+        e=embed('TOV4R • '+t('shop'),t('shop_desc',credits=account['credits'],starter=STARTER_CREDITS))
         for key,(name,category,price,_) in CATALOG.items():
-            e.add_field(name=name+' • '+category.title(),value='Owned' if key in account['items'] else f'{price} credits • /cosmetic_buy',inline=True)
+            e.add_field(name=name+' • '+t(category),value=t('owned') if key in account['items'] else f'{price} credits • /cosmetic_buy',inline=True)
         await i.response.send_message(embed=e,ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.command(description='View your private cosmetic credit balance')
     async def wallet(self,i:discord.Interaction):
         account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
-        await reply(i,f"Balance: {account['credits']} TOV Credits. Free, server-specific and non-transferable.")
+        await reply(i,tr(self.bot,i.guild_id,'wallet',credits=account['credits']))
 
     @app_commands.guild_only()
     @app_commands.command(description='View your owned profile cosmetics')
     async def inventory(self,i:discord.Interaction):
         account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
-        lines=[CATALOG[k][0]+(' • Equipped' if k in (account['theme'],account['badge']) else '') for k in account['items'] if k in CATALOG]
-        await i.response.send_message(embed=embed('TOV4R • Inventory','\n'.join(lines) or 'No items yet. Use /shop.'),ephemeral=True)
+        t=lambda k:tr(self.bot,i.guild_id,k)
+        lines=[CATALOG[k][0]+(' • '+t('equipped') if k in (account['theme'],account['badge']) else '') for k in account['items'] if k in CATALOG]
+        await i.response.send_message(embed=embed('TOV4R • '+t('inventory'),'\n'.join(lines) or t('empty_inventory')),ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.command(description='Purchase a fixed-price cosmetic with free credits')
     @app_commands.choices(item=[app_commands.Choice(name=f'{v[0]} ({v[2]} credits)',value=k) for k,v in CATALOG.items()])
     async def cosmetic_buy(self,i:discord.Interaction,item:str):
         result=self.bot.store.cosmetic_buy(i.guild_id,i.user.id,item)
-        await reply(i,{'purchased':'Cosmetic unlocked. Use /cosmetic_equip to display it.','already_owned':'You already own this cosmetic. No credits charged.','insufficient':'Not enough credits.'}[result])
+        await reply(i,tr(self.bot,i.guild_id,result))
 
     @app_commands.guild_only()
     @app_commands.command(description='Equip an owned profile theme or badge')
@@ -855,10 +880,10 @@ class Features(commands.Cog):
             category=item.split('_',1)[1]
             item=''
         elif item in CATALOG: category=CATALOG[item][1]
-        else: return await reply(i,'Unknown cosmetic.')
+        else: return await reply(i,tr(self.bot,i.guild_id,'unknown_cosmetic'))
         if not self.bot.store.cosmetic_equip(i.guild_id,i.user.id,category,item):
-            return await reply(i,'Unlock this cosmetic in /shop first.')
-        await reply(i,'Profile updated. See /profile.')
+            return await reply(i,tr(self.bot,i.guild_id,'unlock_first'))
+        await reply(i,tr(self.bot,i.guild_id,'profile_updated'))
 
     @app_commands.guild_only()
     @app_commands.command(description='View a member profile, level, rank and XP progress')

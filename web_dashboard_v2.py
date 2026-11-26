@@ -39,7 +39,7 @@ STATE_SECONDS = 600
 PLAN_SECONDS = 600
 SAFE_CONFIG = frozenset({
     "levels", "antispam", "anti_invites", "voice_xp", "security_enabled",
-    "welcome_text", "blocked_words", "xp_cooldown",
+    "welcome_text", "blocked_words", "xp_cooldown", "language",
 })
 
 

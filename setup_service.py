@@ -7,6 +7,7 @@ import discord
 from server_templates import TEMPLATES
 from template_security import member_role_permissions
 from level_rewards import provision_rewards, tracked_reward
+from localization import tr
 
 
 async def provision_modules(bot, guild, theme, *,
@@ -77,9 +78,9 @@ async def provision_modules(bot, guild, theme, *,
 
     for name, factory, description in (
         ("voice-panel", voice_panel_factory,
-         "Dkhel l **➕ Create your room**, men ba3d control room dyalek hna."),
+         tr(bot,guild.id,"voice_desc")),
         ("tickets", ticket_panel_factory,
-         "Choose Support, Report or Partnership from the menu."),
+         tr(bot,guild.id,"ticket_intro")+"\n"+tr(bot,guild.id,"ticket_private")),
     ):
         channel = discord.utils.get(guild.text_channels, name=name)
         if channel is None:
@@ -90,7 +91,7 @@ async def provision_modules(bot, guild, theme, *,
                 }, reason="TOV4R setup"
             )
             await channel.send(embed=embed_factory("TOV4R • " + name, description),
-                               view=factory(bot))
+                               view=factory(bot,guild.id))
 
     return {"ok": True}
 

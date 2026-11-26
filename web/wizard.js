@@ -221,7 +221,7 @@ async function saveSettings(event) {
   const fields=event.currentTarget.elements;
   const payload={};
   for(const name of ['levels','antispam','anti_invites','voice_xp','security_enabled','welcome_text',
-                     'blocked_words','xp_cooldown']){
+                     'blocked_words','xp_cooldown','language']){
     const field=fields.namedItem(name);
     payload[name]=(field.type==='checkbox')?field.checked:
                   name==='xp_cooldown'?Number(field.value):field.value;

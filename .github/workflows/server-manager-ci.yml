@@ -41,6 +41,8 @@ jobs:
           assert not cog.enabled
           assert not cog.allowed(SimpleNamespace(guild=None))
           PY
+      - name: Test guild language isolation and persistent panels
+        run: python -m unittest discover -s tests -p 'test_localization.py' -v
       - name: Test backup isolation and event eligibility
         run: python -m unittest discover -s tests -p 'test_community_tools.py' -v
       - name: Test free cosmetic wallet and profile inventory

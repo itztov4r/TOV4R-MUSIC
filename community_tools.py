@@ -4,7 +4,7 @@ import time
 from store import level, validate_config
 from cosmetics import CATALOG
 
-RESTORE_FIELDS = ("levels","voice_xp","antispam","anti_invites","security_enabled","xp_cooldown","welcome_text","blocked_words")
+RESTORE_FIELDS = ("levels","voice_xp","antispam","anti_invites","security_enabled","xp_cooldown","welcome_text","blocked_words","language")
 
 def eligible(store, member, requirements):
     if member is None or member.bot: return False
