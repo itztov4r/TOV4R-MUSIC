@@ -79,6 +79,11 @@ class Community(commands.Bot):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
+        from community_premium import CommunityPremium, VerifyView, MultiRoleView
+        await self.add_cog(CommunityPremium(self))
+        self.add_view(VerifyView(self))
+        for r in self.store.all('SELECT * FROM community_role_menus'):
+            self.add_view(MultiRoleView(self,json.loads(r['roles'])),message_id=r['message'])
         from ticket_premium import TicketPremium, TicketReopen
         await self.add_cog(TicketPremium(self))
         self.add_view(TicketReopen(self))
@@ -158,20 +163,23 @@ class Community(commands.Bot):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
         c=member.guild.get_channel(cfg['welcome_channel'])
-        if isinstance(c,discord.TextChannel):
+        if isinstance(c,discord.TextChannel) and not member.bot:
+            from community_premium import THEMES, language
+            accent, colour=THEMES.get(cfg['welcome_theme'],THEMES['ruby'])
+            greeting,title,*_=language(self,member.guild.id)
             image=Image.new('RGB',(1000,340),'#101117'); d=ImageDraw.Draw(image)
-            d.rounded_rectangle((22,22,978,318),radius=28,fill='#1a1b25',outline='#ef3340',width=3)
+            d.rounded_rectangle((22,22,978,318),radius=28,fill='#1a1b25',outline=accent,width=3)
             def font(size):
                 for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf','C:/Windows/Fonts/arialbd.ttf'):
                     if Path(p).exists(): return ImageFont.truetype(p,size)
                 return ImageFont.load_default(size=size)
-            d.text((60,55),'TOV4R / COMMUNITY',fill='#ef3340',font=font(25))
-            d.text((60,116),'MER7BA BIK!',fill='white',font=font(52))
+            d.text((60,55),'TOV4R / COMMUNITY',fill=accent,font=font(25))
+            d.text((60,116),greeting,fill='white',font=font(52))
             # Avoid font failures on arbitrary display names by leaving them in the embed.
             d.text((60,220),f'MEMBER #{member.guild.member_count}',fill='#aaaabc',font=font(24))
             data=io.BytesIO(); image.save(data,format='PNG'); data.seek(0)
             text=cfg['welcome_text'].replace('{mention}',member.mention).replace('{server}',member.guild.name).replace('{name}',member.display_name)
-            e=embed('Mer7ba '+member.display_name,text); e.set_image(url='attachment://welcome.png')
+            e=embed(title+' '+member.display_name,text); e.colour=discord.Colour(colour); e.set_thumbnail(url=member.display_avatar.url); e.set_image(url='attachment://welcome.png')
             try: await c.send(embed=e,file=discord.File(data,filename='welcome.png'))
             except discord.HTTPException: log.exception('Welcome failed')
         await self.audit(member.guild,'Member joined',f'{member} • {member.id}')
@@ -659,7 +667,7 @@ class Features(commands.Cog):
         await i.response.send_message(embed=embed('TOV4R • '+t('command_center'),
             f'**{t("members")}**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
             f'**{t("voice")}**\n{t("voice_help")}\n'
-            f'**{t("staff")}**\n/language · /setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
+            f'**{t("staff")}**\n/language · /setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/welcome_setup · /verify_setup · /roles_menu · /rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority · /ticket_history · /ticket_stats\n/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
@@ -729,7 +737,7 @@ class Features(commands.Cog):
         changes={}
         for k,v in [('welcome_channel',welcome),('logs_channel',logs),('support_role',support),('autorole',autorole)]:
             if v: changes[k]=v.id
-        if support and tracked_reward(self.bot,i.guild_id,support.id): raise ValueError('Level rewards cannot be staff roles.')
+        if support and (tracked_reward(self.bot,i.guild_id,support.id) or self.bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(i.guild_id,support.id))): raise ValueError('Level rewards cannot be staff roles.')
         if autorole and (tracked_reward(self.bot,i.guild_id,autorole.id) or reserved_staff_role(self.bot,i.guild,autorole) or not safe_role(autorole,i.guild) or (support and support.id==autorole.id)): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
         for k,v in [('levels',levels),('antispam',antispam),('anti_invites',anti_invites)]:
             if v is not None: changes[k]=v
@@ -787,7 +795,7 @@ class Features(commands.Cog):
     @app_commands.command(description='Configure private support tickets and publish the ticket panel')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ticket_setup(self,i:discord.Interaction,category:discord.CategoryChannel,support:discord.Role,panel:discord.TextChannel|None=None):
-        if support.is_default() or support.managed or tracked_reward(self.bot,i.guild_id,support.id):
+        if support.is_default() or support.managed or tracked_reward(self.bot,i.guild_id,support.id) or self.bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(i.guild_id,support.id)):
             raise ValueError('Choose a dedicated staff role, not everyone or a managed role.')
         if i.user.id!=i.guild.owner_id and support>=i.user.top_role:
             raise ValueError('Support role must be below your highest role.')
