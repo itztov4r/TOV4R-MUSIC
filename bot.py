@@ -79,6 +79,9 @@ class Community(commands.Bot):
             raise RuntimeError(f'Wrong bot token: authenticated application {self.application_id}, expected {expected}. Update DISCORD_TOKEN; no commands were changed.')
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
+        from ticket_premium import TicketPremium, TicketReopen
+        await self.add_cog(TicketPremium(self))
+        self.add_view(TicketReopen(self))
         from voice_commands import VoiceCommands
         await self.add_cog(VoiceCommands(self))
         from server_manager import ServerManager
@@ -226,6 +229,7 @@ class Community(commands.Bot):
         self.store.run('DELETE FROM rooms WHERE channel=?',(channel.id,))
         self.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(channel.id,))
         self.store.run('DELETE FROM ticket_deletions WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
+        self.store.run('DELETE FROM ticket_guests WHERE channel=? AND guild=?',(channel.id,channel.guild.id))
     async def on_voice_state_update(self,member,before,after):
         if member.bot: return
         # An interruption or change during a sample invalidates that interval.
@@ -540,6 +544,7 @@ class TicketPanel(ErrorView):
             e=embed(f'🎫 {t(kind)} • TOV4R',t('ticket_body',member=i.user.mention))
             e.add_field(name=t('status'),value=t('waiting'))
             e.add_field(name=t('ticket_id'),value=str(c.id))
+            e.add_field(name='Staff controls',value='/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority',inline=False)
             await c.send(embed=e,view=CloseTicket(self.bot,i.guild_id))
             await reply(i,t('ticket_ready',channel=c.mention))
             await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {kind} • {i.user.id}')
@@ -576,8 +581,9 @@ class CloseTicket(ErrorView):
             if not r: return await reply(i,'Ticket deja msdod.')
             if i.user.id!=r['owner'] and not is_staff(i.user,self.bot.store.config(i.guild_id)): return await reply(i,'Ma3ndekch permission.')
             await i.response.defer(ephemeral=True)
-            await i.channel.send(embed=embed('🔒 '+tr(self.bot,i.guild_id,'ticket_closed'),tr(self.bot,i.guild_id,'closed_body')))
+            from ticket_premium import TicketReopen
             self.bot.store.queue_ticket_close(i.guild_id,i.channel_id,time.time()+10)
+            await i.channel.send(embed=embed('🔒 '+tr(self.bot,i.guild_id,'ticket_closed'),tr(self.bot,i.guild_id,'closed_body')),view=TicketReopen(self.bot))
             await reply(i,tr(self.bot,i.guild_id,'ticket_closed')+' ✅')
         await asyncio.sleep(10)
         await self.bot.delete_closed_ticket(i.guild_id,i.channel_id)
@@ -655,7 +661,7 @@ class Features(commands.Cog):
             f'**{t("voice")}**\n{t("voice_help")}\n'
             f'**{t("staff")}**\n/language · /setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
-            '/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
+            '/ticket_control · /ticket_add · /ticket_remove · /ticket_rename · /ticket_priority · /ticket_history · /ticket_stats\n/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             f'**{t("server_manager")}**\n/server scan · /server bots · /server fix_everyone\n'
             '/server harden_role · /server remove_role · /server move_channel\n'
             '/server private_channel (admin confirmation before edits)\n'

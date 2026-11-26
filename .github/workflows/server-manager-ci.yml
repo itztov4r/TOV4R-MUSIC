@@ -53,6 +53,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_voice_preferences.py' -v
       - name: Test guild-scoped security monitoring
         run: python -m unittest discover -s tests -p 'test_security_monitor.py' -v
+      - name: Test ticket V8 priority and reopen safety
+        run: python -m unittest discover -s tests -p 'test_ticket_v8.py' -v
       - name: Test ticket categories and single staff claim
         run: python -m unittest discover -s tests -p 'test_ticket_v2.py' -v
       - name: Test persistent ticket deletion queue
