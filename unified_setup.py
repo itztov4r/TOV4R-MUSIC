@@ -2,7 +2,7 @@
 import json
 import discord
 from setup_service import provision_server, reserved_staff_role
-from community_premium import basic_role, VerifyView, MultiRoleView, language
+from community_premium import basic_role, VerifyView, MultiRoleView, language, welcome_name
 from localization import tr
 from level_rewards import tracked_reward
 
@@ -56,10 +56,27 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
         update(voice_creator=creator.id); summary["channels_new"].append(creator.name)
     pub={guild.default_role:discord.PermissionOverwrite(send_messages=False),guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True,attach_files=True)}
     private={guild.default_role:discord.PermissionOverwrite(view_channel=False),guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True)}
+    def usable_welcome(ch):
+        return public_panel(ch,guild) and welcome_name(ch.name) and ch.permissions_for(guild.me).attach_files
     welcome=guild.get_channel(cfg["welcome_channel"])
-    if not public_panel(welcome,guild) or not welcome.permissions_for(guild.me).attach_files:
-        welcome=await guild.create_text_channel("welcome",overwrites=pub,reason="TOV4R unified setup")
-        update(welcome_channel=welcome.id); summary["channels_new"].append(welcome.name)
+    if not usable_welcome(welcome):
+        welcome=next((ch for ch in guild.text_channels if usable_welcome(ch)),None)
+        if welcome is None:
+            welcome=await guild.create_text_channel("welcome",overwrites={
+                **pub,guild.default_role:discord.PermissionOverwrite(view_channel=True,send_messages=False)
+            },reason="TOV4R dedicated welcome")
+            summary["channels_new"].append(welcome.name)
+        update(welcome_channel=welcome.id)
+    # Discord's own arrival messages are independent from the bot.
+    # Preserve every other system flag and leave system channel unchanged.
+    flags=guild.system_channel_flags
+    if flags.join_notifications:
+        if guild.me.guild_permissions.manage_guild:
+            try:
+                flags.join_notifications=False
+                await guild.edit(system_channel_flags=flags,reason="TOV4R welcome uses dedicated channel")
+            except discord.HTTPException: summary["warnings"].append("Could not disable native Discord arrival messages; check Manage Server.")
+        else: summary["warnings"].append("Disable native arrival messages in Server Settings > Overview, or grant Manage Server.")
     logs=guild.get_channel(cfg["logs_channel"])
     if not private_log(logs,guild):
         logs=await guild.create_text_channel("tov4r-private-logs",overwrites=private,reason="TOV4R unified setup")
@@ -89,7 +106,8 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
     verified=await role("role","TOV4R Verified",0x2ecc71,"__verification__")
     roles=[await role(k,n,c) for k,n,c in MENU_ROLES]
     t=language(bot,guild.id)
-    if not basic_role(bot,guild,verified,verification=True): summary["warnings"].append("Verification role unsafe; panel unavailable.")
+    if not basic_role(bot,guild,verified,verification=True):
+        summary["warnings"].append("Verification role unsafe or above bot: put TOV4R Bot above TOV4R Verified, remove elevated permissions, then rerun /setup.")
     safe=[r for r in roles if basic_role(bot,guild,r)]
     if len(safe)!=len(roles): summary["warnings"].append("Some cosmetic roles were unsafe and omitted.")
     definitions=[
@@ -106,7 +124,10 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
         if not public_panel(channel,guild):
             channel=next((ch for ch in guild.text_channels if ch.name==name and public_panel(ch,guild)),None)
         if channel is None:
-            channel=await guild.create_text_channel(name,overwrites=pub,reason="TOV4R unified setup")
+            overwrites=pub
+            if name=="verification":
+                overwrites={**pub,guild.default_role:discord.PermissionOverwrite(view_channel=True,read_message_history=True,send_messages=False)}
+            channel=await guild.create_text_channel(name,overwrites=overwrites,reason="TOV4R unified setup")
             summary["channels_new"].append(channel.name)
         remember(bot,guild,"channel:"+name,channel.id,"channel")
         msg=None
@@ -122,6 +143,7 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
             await msg.edit(embed=e,view=view)
         else: msg=await channel.send(embed=e,view=view)
         remember(bot,guild,"panel:"+name,msg.id,"message")
+        if name=="verification": bot.add_view(view,message_id=msg.id)
         if data is not None:
             bot.store.run("INSERT OR REPLACE INTO community_role_menus VALUES(?,?,?)",(msg.id,guild.id,json.dumps(data)))
             bot.add_view(view,message_id=msg.id)

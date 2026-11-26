@@ -1,5 +1,6 @@
 """Opt-in welcome customization, acknowledgement verification, safe role menus."""
 import json
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -16,6 +17,17 @@ TEXT={
 def language(bot,guild_id):
     return TEXT.get(bot.store.config(guild_id)["language"],TEXT["en"])
 
+def welcome_name(name):
+    # Never treat general/chat as a dedicated greeting destination.
+    tokens=set(re.findall(r"[a-z0-9]+",name.casefold()))
+    return bool(tokens & {"welcome","bienvenue","mer7ba","accueil"}) and not bool(tokens & {"general","chat","général"})
+
+def welcome_destination(bot,guild):
+    channel=guild.get_channel(bot.store.config(guild.id)["welcome_channel"])
+    if not isinstance(channel,discord.TextChannel) or not welcome_name(channel.name): return None
+    p=channel.permissions_for(guild.me)
+    return channel if p.view_channel and p.send_messages and p.embed_links else None
+
 def verification_role(bot,guild_id,role_id):
     return bool(bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(guild_id,role_id)))
 
@@ -25,12 +37,17 @@ def basic_role(bot,guild,role,*,verification=False):
     if tracked_reward(bot,guild.id,role.id): return False
     if verification:
         if not verification_role(bot,guild.id,role.id): return False
-        # Verification role starts with no guild-wide privileges.
-        if role.permissions.value: return False
+        # Ordinary community permissions are safe, moderation privileges are not.
         safe_channel=reward_permissions(50).value
-        if any(ch.overwrites_for(role).pair()[0].value & ~safe_channel for ch in guild.channels): return False
+        if role.permissions.value & ~safe_channel: return False
         cfg=bot.store.config(guild.id)
         if role.id==cfg['support_role'] or role.id==cfg['autorole']: return False
+        protected={cfg['ticket_category'],cfg['logs_channel'],cfg['security_channel']}
+        for ch in guild.channels:
+            ow=ch.overwrites_for(role)
+            if ow.pair()[0].value & ~safe_channel: return False
+            if ow.view_channel is True and (ch.id in protected or getattr(ch,'category_id',None)==cfg['ticket_category']):
+                return False
     else:
         if reserved_staff_role(bot,guild,role): return False
         if role.permissions.value & ~reward_permissions(50).value: return False
@@ -59,8 +76,11 @@ class VerifyView(discord.ui.View):
         async with self.bot.locks[("verify",i.guild_id,i.user.id)]:
             row=self.bot.store.one("SELECT discord_id FROM template_items WHERE guild=? AND template='__verification__' AND item_key='role'",(i.guild_id,))
             role=i.guild.get_role(row["discord_id"]) if row else None
-            if not basic_role(self.bot,i.guild,role,verification=True) or paused(self.bot,i.guild_id):
-                return await answer(i,"Verification temporarily unavailable. Contact staff.")
+            if paused(self.bot,i.guild_id):
+                return await answer(i,"Verification paused by security monitoring. Try again after the pause.")
+            if role is None: return await answer(i,"Verified role missing. Ask the owner to run /setup.")
+            if not basic_role(self.bot,i.guild,role,verification=True):
+                return await answer(i,"Verified role unsafe or above bot role. Ask the owner to check permissions and role hierarchy.")
             if role not in i.user.roles:
                 try: await i.user.add_roles(role,reason="TOV4R rules acknowledgement")
                 except discord.HTTPException: return await answer(i,"Bot cannot assign this role.")

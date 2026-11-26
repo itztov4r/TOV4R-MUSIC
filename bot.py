@@ -166,9 +166,9 @@ class Community(commands.Bot):
         if role and not tracked_reward(self,member.guild.id,role.id) and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
-        c=member.guild.get_channel(cfg['welcome_channel'])
-        if isinstance(c,discord.TextChannel) and not member.bot:
-            from community_premium import THEMES, language
+        from community_premium import THEMES, language, welcome_destination
+        c=welcome_destination(self,member.guild)
+        if c is not None and not member.bot:
             accent, colour=THEMES.get(cfg['welcome_theme'],THEMES['ruby'])
             greeting,title,*_=language(self,member.guild.id)
             image=Image.new('RGB',(1000,340),'#101117'); d=ImageDraw.Draw(image)
@@ -184,15 +184,21 @@ class Community(commands.Bot):
             data=io.BytesIO(); image.save(data,format='PNG'); data.seek(0)
             text=cfg['welcome_text'].replace('{mention}',member.mention).replace('{server}',member.guild.name).replace('{name}',member.display_name)
             e=embed(title+' '+member.display_name,text); e.colour=discord.Colour(colour); e.set_thumbnail(url=member.display_avatar.url); e.set_image(url='attachment://welcome.png')
-            try: await c.send(embed=e,file=discord.File(data,filename='welcome.png'))
+            try:
+                if c.permissions_for(member.guild.me).attach_files:
+                    await c.send(embed=e,file=discord.File(data,filename='welcome.png'))
+                else:
+                    e.remove_image()
+                    await c.send(embed=e)
             except discord.HTTPException: log.exception('Welcome failed')
         await self.audit(member.guild,'Member joined',f'{member} • {member.id}')
     async def on_member_remove(self,member):
         await self.audit(member.guild,'Member left',f'{member} • {member.id}')
         self.store.run('DELETE FROM community_birthdays WHERE guild=? AND user=?',(member.guild.id,member.id))
         cfg=self.store.config(member.guild.id)
-        c=member.guild.get_channel(cfg['welcome_channel'])
-        if not member.bot and cfg['goodbye_enabled'] and isinstance(c,discord.TextChannel):
+        from community_premium import welcome_destination
+        c=welcome_destination(self,member.guild)
+        if not member.bot and cfg['goodbye_enabled'] and c is not None:
             from community_premium import THEMES
             title,body={'fr':('Au revoir 👋','a quitté le serveur.'),'darija':('Bslama 👋','khrej mn server.'),'en':('Goodbye 👋','left the server.')}[cfg['language']]
             e=embed(title,discord.utils.escape_markdown(member.display_name)+' '+body)
