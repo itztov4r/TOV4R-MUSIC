@@ -19,7 +19,7 @@ from store import Store, level
 from security_monitor import SecurityMonitor
 from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
 from focus_setup import focus_server, restore_server, restore_active_template
-from setup_service import provision_server
+from setup_service import provision_server, provision_modules, reserved_staff_role
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -147,7 +147,7 @@ class Community(commands.Bot):
             elif self.security.observe(member.guild.id,'join'):
                 await self.security_alert(member.guild,'Join burst','Unusual member joins detected. Automatic roles temporarily paused; check new members manually.')
         role=member.guild.get_role(cfg['autorole'])
-        if role and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
+        if role and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
         c=member.guild.get_channel(cfg['welcome_channel'])
@@ -570,7 +570,7 @@ class RolePanel(ErrorView):
             b=discord.ui.Button(label=label[:80],custom_id=f'role:{rid}',style=discord.ButtonStyle.secondary)
             async def callback(i,role_id=rid):
                 r=i.guild.get_role(role_id)
-                if not r or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
+                if not r or reserved_staff_role(bot,i.guild,r) or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
                 await i.response.defer(ephemeral=True)
                 if r in i.user.roles: await i.user.remove_roles(r,reason='Self role')
                 else: await i.user.add_roles(r,reason='Self role')
@@ -615,7 +615,7 @@ class Features(commands.Cog):
         await i.response.send_message(embed=embed('TOV4R • Command center',
             '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
-            '**Staff**\n/setup type:Movies/Gaming/Music/Anime/etc · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
+            '**Staff**\n/setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
             '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
@@ -623,32 +623,26 @@ class Features(commands.Cog):
             '/server private_channel (admin confirmation before edits)\n'
             '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
     @app_commands.guild_only()
-    @app_commands.command(description='Auto-setup channels and roles based on your server type')
-    @app_commands.describe(
-        type='Choose your server theme: Movies, Gaming, Music, Anime and more',
-        cleanup='Also remove empty, untouched channels created by TOV4R from older themes',
-        focus='Show only this type publicly; privately archive unrelated channels (reversible)',
-    )
-    @app_commands.choices(type=TEMPLATE_CHOICES)
+    @app_commands.command(description='Create Admin, Moderator, Support and Member roles only')
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self,i:discord.Interaction,type:str|None=None,cleanup:bool=False,focus:bool=False):
+    async def setup(self,i:discord.Interaction):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            chosen = type or self.bot.store.config(i.guild_id).get('server_type','community')
-            summary = await provision_server(
-                self.bot, i.guild, chosen,
-                voice_panel_factory=VoicePanel, ticket_panel_factory=TicketPanel,
-                role_panel_factory=RolePanel, safe_role_fn=safe_role,
-                embed_factory=embed, focus=focus, cleanup=cleanup
-            )
-            await self.bot.audit(i.guild,'Setup',
-                                 f'Server type {chosen}, focus={focus}, by {i.user.id}')
-            msg = format_result(summary)
-            if summary.get('focus'):
-                msg += (f"\n🔒 Archived: **{len(summary['focus']['archived'])}**"
-                        f" • Remaining: **{summary['focus']['remaining']}**"
-                        "\nUse /restore_layout to undo archive.")
-            await reply(i,msg)
+            summary=await provision_server(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'])
+            await self.bot.audit(i.guild,'Roles setup',f'By {i.user.id}')
+        await reply(i,'✅ Roles setup complete. New: '+str(len(summary['roles_new']))+' • Reused: '+str(summary['reused'])+'. No channels created or removed. Admin/Moderator rights must be configured manually by the server owner. No roles assigned automatically.')
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Create only missing bot service channels for voice, tickets, welcome and logs')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_modules(self,i:discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('setup',i.guild_id)]:
+            await provision_modules(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'],
+                voice_panel_factory=VoicePanel,ticket_panel_factory=TicketPanel,
+                role_panel_factory=RolePanel,safe_role_fn=safe_role,embed_factory=embed)
+        await reply(i,'✅ Essential bot modules configured. Existing channels preserved; no themed channels created.')
+
     @app_commands.guild_only()
     @app_commands.command(description='Restore channels hidden by focused server setup')
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -670,7 +664,7 @@ class Features(commands.Cog):
         changes={}
         for k,v in [('welcome_channel',welcome),('logs_channel',logs),('support_role',support),('autorole',autorole)]:
             if v: changes[k]=v.id
-        if autorole and not safe_role(autorole,i.guild): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
+        if autorole and (reserved_staff_role(self.bot,i.guild,autorole) or not safe_role(autorole,i.guild) or (support and support.id==autorole.id)): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
         for k,v in [('levels',levels),('antispam',antispam),('anti_invites',anti_invites)]:
             if v is not None: changes[k]=v
         self.bot.store.update(i.guild_id,changes)
@@ -748,7 +742,7 @@ class Features(commands.Cog):
     @app_commands.command(description='Publish a safe self-service role button')
     @app_commands.checks.has_permissions(manage_roles=True)
     async def rolepanel(self,i:discord.Interaction,role:discord.Role):
-        if not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
+        if reserved_staff_role(self.bot,i.guild,role) or not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
         await i.response.defer(ephemeral=True)
         roles=[(role.id,role.name)]
         m=await i.channel.send(embed=embed('Choose your role',f'Click to add / remove **{role.name}**.'),view=RolePanel(self.bot,roles))

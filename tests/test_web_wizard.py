@@ -153,7 +153,8 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(response.text)
         self.assertIn("plan_id", data)
         self.assertEqual(data["theme"], "movies")
-        self.assertGreater(data["new_channels_estimate"], 0)
+        self.assertEqual(data["new_channels_estimate"], 0)
+        self.assertEqual(data["new_roles_estimate"], 4)
         self.assertEqual(self.guild.channels, {})
         self.assertEqual(self.guild.roles, [])
 
@@ -204,7 +205,7 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
             "welcome_text": "Original", "xp_cooldown": 160,
         })
         await self.service.preview(self.owner(self.guild.id, {
-            "theme": "tech", "focus": True,
+            "theme": "tech", "focus": False,
         }))
         cfg = self.store.config(self.guild.id)
         self.assertEqual(cfg["welcome_text"], "Original")

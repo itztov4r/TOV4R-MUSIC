@@ -237,6 +237,20 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.guild.me, rules.overwrites)
         self.assertTrue(rules.overwrites[self.guild.me].send_messages)
 
+    async def test_roles_only_setup_is_idempotent_and_unprivileged(self):
+        from setup_service import provision_server, reserved_staff_role
+        result = await provision_server(self.bot,self.guild,"community")
+        self.assertEqual(len(result["roles_new"]),4)
+        self.assertEqual(self.guild.channels,{})
+        self.assertTrue(all(not r.permissions.administrator for r in self.guild.roles))
+        for r in self.guild.roles:
+            self.assertEqual(reserved_staff_role(self.bot,self.guild,r),r.name!="TOV4R Member")
+        second=await provision_server(self.bot,self.guild,"community")
+        self.assertEqual(second["roles_new"],[])
+        self.assertEqual(self.guild.channels,{})
+        with self.assertRaises(ValueError):
+            await provision_server(self.bot,self.guild,"community",focus=True)
+
     async def test_normal_channels_always_use_dict_overwrites(self):
         # This reproduces the production error that affected /setup on Gfrx.
         await self.apply("movies")

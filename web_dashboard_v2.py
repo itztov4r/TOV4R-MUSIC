@@ -26,7 +26,7 @@ from server_templates import (
     TEMPLATES, styled_category_name, styled_channel_name, styled_role_name,
 )
 from focus_setup import candidates, restore_server
-from setup_service import provision_server
+from setup_service import provision_server, SETUP_ROLES, setup_role
 from store import validate_config
 
 LOG = logging.getLogger("tov4r.dashboard")
@@ -263,8 +263,7 @@ class DashboardV2:
                 "bots": sum(m.bot for m in guild.members),
                 "type": cfg["server_type"],
                 "can_setup": bool(
-                    guild.me and guild.me.guild_permissions.manage_channels
-                    and guild.me.guild_permissions.manage_roles
+                    guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
                 "activity": self.bot.store.all(
@@ -295,64 +294,15 @@ class DashboardV2:
         ).hexdigest()
 
     def _plan(self, guild, theme, focus):
-        from server_templates import _get_item
-        spec = TEMPLATES[theme]
-        structure = []
-        missing_cats = 0
-        missing_channels = 0
-        for group in spec["groups"]:
-            cid = _get_item(self.bot, guild.id, theme, "category:" + group["key"])
-            known = guild.get_channel(cid) if cid else None
-            name = styled_category_name(group["name"])
-            exists = isinstance(known, discord.CategoryChannel) or any(
-                c.name in (name, group["name"]) for c in guild.categories
-            )
-            if not exists:
-                missing_cats += 1
-            channels = []
-            for ch in group["channels"]:
-                item_key = f'{group["key"]}:{ch["kind"]}:{ch["name"]}'
-                ch_id = _get_item(self.bot, guild.id, theme, item_key)
-                known_ch = guild.get_channel(ch_id) if ch_id else None
-                display = styled_channel_name(ch["name"], ch["kind"])
-                found = known_ch is not None or any(
-                    c.name in (display, ch["name"])
-                    for c in self._channels(guild) if getattr(c, "category_id", None)
-                    == (known.id if isinstance(known, discord.CategoryChannel) else None)
-                )
-                if not found:
-                    missing_channels += 1
-                channels.append({
-                    "name": display, "kind": ch["kind"],
-                    "readonly": bool(ch.get("readonly", False)),
-                    "exists": bool(found),
-                })
-            structure.append({"category": name, "exists": exists, "channels": channels})
-        missing_roles = sum(
-            not any(r.name in (name, styled_role_name(name))
-                    for r in guild.roles)
-            for name in spec["roles"]
-        )
-        focus_count, protected_count = 0, 0
-        if focus:
-            to_move, skipped = candidates(self.bot, guild, theme)
-            focus_count = len(to_move)
-            protected_count = len(skipped)
         return {
-            "theme": theme, "title": spec["title"],
-            "categories": structure, "roles": [
-                styled_role_name(r) for r in spec["roles"]
-            ],
-            "new_categories_estimate": missing_cats,
-            "new_channels_estimate": missing_channels,
-            "new_roles_estimate": missing_roles,
-            "focus": focus, "off_theme_archive_estimate": focus_count,
-            "protected_channels": protected_count,
-            "warnings": [
-                "Preview is an estimate; live Discord changes can alter the result.",
-                "No roles, messages, or existing channels are deleted by this wizard.",
-                "Focus archives unrelated public channels privately and supports undo."
-            ],
+            "theme": theme, "title": "TOV4R Staff & Community",
+            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES],
+            "new_categories_estimate": 0, "new_channels_estimate": 0,
+            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES),
+            "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
+            "warnings": ["Roles only. No channels are created, edited or deleted. No roles assigned.",
+                         "The server owner must configure Admin and Moderator permissions manually.",
+                         "Use /setup_modules in Discord for optional essential bot channels."]
         }
 
     async def preview(self, request):
@@ -360,7 +310,7 @@ class DashboardV2:
         data = await self._json(request)
         theme = data.get("theme")
         focus = data.get("focus", False)
-        if theme not in TEMPLATES or type(focus) is not bool:
+        if theme not in TEMPLATES or focus is not False:
             raise web.HTTPBadRequest(text="Invalid type or focus flag")
         self._prune()
         plan = self._plan(guild, theme, focus)

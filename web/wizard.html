@@ -63,11 +63,11 @@
       </section>
       <div class="stats" id="stats"></div>
       <section id="builder" class="panel builder">
-        <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Choose a theme. See exactly what TOV4R plans to add before it touches your server.</p></div><span class="step">PREVIEW → APPLY</span></div>
+        <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Preview the Admin, Moderator, Support and Member roles. No channels are created or changed.</p></div><span class="step">PREVIEW → APPLY</span></div>
         <div id="themes" class="themes" role="group" aria-label="Server types"></div>
         <div class="wizard-options">
-          <label class="switch"><input id="focus" type="checkbox"><span class="toggle-ui"></span><span><b>Focus Mode</b><small>Hide unrelated public channels in a recoverable private archive. Never delete their messages.</small></span></label>
-          <p class="safety">🔒 Unrelated admin, log and active voice channels are protected. Your current roles and messages are preserved.</p>
+          <input id="focus" type="checkbox" hidden disabled><b>Roles-only setup</b><p>Staff permissions must be configured manually by the server owner.</p>
+          <p class="safety">🔒 All existing channels and roles are preserved. Use /setup_modules for optional essential bot channels.</p>
         </div>
         <div class="wizard-actions"><button class="action" id="preview" type="button">Generate preview →</button><button class="quiet" id="reset-preview" type="button">Reset</button></div>
         <div id="preview-panel" class="preview-panel" hidden>
