@@ -276,7 +276,7 @@ class Community(commands.Bot):
             cfg=self.store.config(guild.id)
             if not cfg['levels'] or not cfg['voice_xp']: continue
             for channel in guild.voice_channels:
-                if channel.id in (guild.afk_channel_id,cfg['voice_creator']): continue
+                if channel.id in (getattr(guild.afk_channel,'id',None),cfg['voice_creator']): continue
                 members=[m for m in channel.members if not m.bot and m.voice and not m.voice.self_deaf and not m.voice.deaf and not m.voice.self_mute and not m.voice.mute]
                 if len(members)<2: continue
                 current.update((guild.id,m.id,channel.id) for m in members)
