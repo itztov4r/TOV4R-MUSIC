@@ -42,6 +42,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS rooms(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER);
         CREATE TABLE IF NOT EXISTS tickets(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER,closed INTEGER DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_ticket ON tickets(guild,owner) WHERE closed=0;
+        CREATE TABLE IF NOT EXISTS ticket_details(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,kind TEXT NOT NULL DEFAULT 'support',claimed_by INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS ticket_deletions(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,due REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS ticket_transcripts(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,body BLOB NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS xp(guild INTEGER,user INTEGER,points INTEGER DEFAULT 0,last REAL DEFAULT 0,PRIMARY KEY(guild,user));
@@ -112,6 +113,17 @@ class Store:
             if points:
                 self.db.execute('INSERT INTO xp(guild,user,points,last) VALUES(?,?,?,0) ON CONFLICT(guild,user) DO UPDATE SET points=points+excluded.points',(guild,user,points))
         return points
+    def set_ticket_kind(self,guild,channel,kind):
+        if kind not in ('support','report','partnership'): raise ValueError('Invalid ticket type')
+        self.run('INSERT OR IGNORE INTO ticket_details(channel,guild,kind) SELECT channel,guild,? FROM tickets WHERE guild=? AND channel=? AND closed=0',(kind,guild,channel))
+    def claim_ticket(self,guild,channel,user):
+        with self.db:
+            if not self.db.execute('SELECT 1 FROM tickets WHERE guild=? AND channel=? AND closed=0',(guild,channel)).fetchone():
+                return None
+            self.db.execute('INSERT OR IGNORE INTO ticket_details(channel,guild) VALUES(?,?)',(channel,guild))
+            self.db.execute('UPDATE ticket_details SET claimed_by=? WHERE guild=? AND channel=? AND claimed_by=0',(user,guild,channel))
+            row=self.db.execute('SELECT claimed_by FROM ticket_details WHERE guild=? AND channel=?',(guild,channel)).fetchone()
+            return row['claimed_by'] if row else None
     def queue_ticket_close(self,guild,channel,due):
         with self.db:
             changed=self.db.execute('UPDATE tickets SET closed=1 WHERE guild=? AND channel=? AND closed=0',(guild,channel)).rowcount

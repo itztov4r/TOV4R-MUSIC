@@ -46,7 +46,7 @@ async def reply(i, text):
     else: await i.response.send_message(text, ephemeral=True)
 
 def is_staff(member, cfg):
-    return member.guild_permissions.manage_guild or any(r.id == cfg['support_role'] for r in member.roles)
+    return member.guild_permissions.manage_guild or any(r.id == cfg['support_role'] and not r.is_default() for r in member.roles)
 
 def safe_role(role, guild):
     # Self-service must never grant moderation/administrative permissions.
@@ -427,6 +427,18 @@ class TicketPanel(ErrorView):
     def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
     @discord.ui.button(label='🎫 Open ticket',custom_id='ticket:open',style=discord.ButtonStyle.danger)
     async def open_ticket(self,i,button):
+        await self.create_ticket(i,'support')
+
+    @discord.ui.select(custom_id='ticket:type:v2',placeholder='Choose a ticket type',min_values=1,max_values=1,options=[
+        discord.SelectOption(label='Support',value='support',emoji='🎫',description='Questions and technical help'),
+        discord.SelectOption(label='Report',value='report',emoji='🛡️',description='Privately report a community issue'),
+        discord.SelectOption(label='Partnership',value='partnership',emoji='🤝',description='Discuss a server partnership')])
+    async def select_ticket(self,i,select):
+        await self.create_ticket(i,select.values[0])
+
+    async def create_ticket(self,i,kind):
+        if not i.guild or not isinstance(i.user,discord.Member) or kind not in ('support','report','partnership'):
+            return await reply(i,'Invalid ticket request.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('ticket',i.guild_id,i.user.id)]:
             cfg=self.bot.store.config(i.guild_id)
@@ -434,19 +446,41 @@ class TicketPanel(ErrorView):
             if existing and i.guild.get_channel(existing['channel']): return await reply(i,f'Ticket dyalek: <#{existing["channel"]}>')
             if existing: self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(existing['channel'],))
             cat=i.guild.get_channel(cfg['ticket_category']); role=i.guild.get_role(cfg['support_role'])
-            if not isinstance(cat,discord.CategoryChannel) or not role: return await reply(i,'Admin khas ydir /setup lwel.')
+            if not isinstance(cat,discord.CategoryChannel) or not role or role.is_default() or role.managed: return await reply(i,'Admin khas ydir /ticket_setup lwel m3a dedicated support role.')
             overwrites={i.guild.default_role:discord.PermissionOverwrite(view_channel=False),
                         i.guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,manage_channels=True),
                         i.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,attach_files=True),
                         role:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)}
-            c=await i.guild.create_text_channel(f'ticket-{i.user.id}',category=cat,overwrites=overwrites)
+            c=await i.guild.create_text_channel(f'{kind}-{i.user.id}',category=cat,overwrites=overwrites,reason='TOV4R private ticket')
             self.bot.store.run('INSERT INTO tickets(channel,guild,owner) VALUES(?,?,?)',(c.id,i.guild_id,i.user.id))
-            await c.send(embed=embed('Support • TOV4R',f'{i.user.mention}, kteb lmochkil dyalek hna.\nClose deletes the channel after 10 seconds. Staff can retrieve a limited text transcript for 7 days.'),view=CloseTicket(self.bot))
+            self.bot.store.set_ticket_kind(i.guild_id,c.id,kind)
+            e=embed(f'🎫 {kind.title()} • TOV4R',f'{i.user.mention}, explain your request here.\nDo not share passwords or secrets.\nClose deletes the channel after 10 seconds. Staff can retrieve a limited text transcript for 7 days.')
+            e.add_field(name='Status',value='Open • Waiting for staff')
+            e.add_field(name='Ticket ID',value=str(c.id))
+            await c.send(embed=e,view=CloseTicket(self.bot))
             await reply(i,f'Ticket wajd: {c.mention}')
-            await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {i.user.id}')
+            await self.bot.audit(i.guild,'Ticket opened',f'{c.id} • {kind} • {i.user.id}')
 
 class CloseTicket(ErrorView):
     def __init__(self,bot): super().__init__(timeout=None); self.bot=bot
+    @discord.ui.button(label='Claim ticket',emoji='🙋',custom_id='ticket:claim:v2',style=discord.ButtonStyle.primary)
+    async def claim_button(self,i,button):
+        if not i.guild or not isinstance(i.channel,discord.TextChannel):
+            return await reply(i,'Ticket channel required.')
+        if not is_staff(i.user,self.bot.store.config(i.guild_id)) or not i.channel.permissions_for(i.user).view_channel:
+            return await reply(i,'Staff only.')
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('close',i.channel_id)]:
+            previous=self.bot.store.one('SELECT claimed_by FROM ticket_details WHERE guild=? AND channel=?',(i.guild_id,i.channel_id))
+            claimant=self.bot.store.claim_ticket(i.guild_id,i.channel_id,i.user.id)
+            if claimant is None: return await reply(i,'Ticket already closed or not found.')
+            if previous and previous['claimed_by']:
+                return await reply(i,f'Ticket already claimed by <@{claimant}>.')
+            if claimant!=i.user.id: return await reply(i,f'Ticket already claimed by <@{claimant}>.')
+            await i.channel.send(embed=embed('🙋 Ticket claimed',f'Staff member <@{claimant}> is handling this request.'))
+            await self.bot.audit(i.guild,'Ticket claimed',f'{i.channel_id} • {claimant}')
+            await reply(i,'Ticket claimed ✅')
+
     @discord.ui.button(label='🔒 Close ticket',custom_id='ticket:close',style=discord.ButtonStyle.secondary)
     async def close_ticket(self,i,button):
         if not i.guild or not isinstance(i.channel,discord.TextChannel):
@@ -594,7 +628,7 @@ class Features(commands.Cog):
     @app_commands.choices(kind=[app_commands.Choice(name='Voice',value='voice'),app_commands.Choice(name='Tickets',value='tickets')])
     async def panels(self,i:discord.Interaction,kind:str):
         await i.response.defer(ephemeral=True)
-        await i.channel.send(embed=embed('TOV4R • '+kind,'Use the buttons below.'),view=VoicePanel(self.bot) if kind=='voice' else TicketPanel(self.bot))
+        await i.channel.send(embed=embed('TOV4R • '+kind,'Choose Support, Report or Partnership below.' if kind=='tickets' else 'Use the buttons below.'),view=VoicePanel(self.bot) if kind=='voice' else TicketPanel(self.bot))
         await reply(i,'Panel sent ✅')
     @app_commands.guild_only()
     @app_commands.command(description='Configure private support tickets and publish the ticket panel')
@@ -614,7 +648,7 @@ class Features(commands.Cog):
             raise ValueError('Bot needs View Channel, Send Messages and Embed Links in panel channel.')
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
-            await target.send(embed=embed('🎫 TOV4R • Support Center','Need help? Open a private ticket using the button below.\nOnly you and authorized staff can view your ticket.\nPlease do not share passwords or other secrets.'),view=TicketPanel(self.bot))
+            await target.send(embed=embed('🎫 TOV4R • Support Center','Choose Support, Report or Partnership from the menu below.\nTickets are private to you and authorized staff (Discord administrators retain access).\nPlease do not share passwords or other secrets.'),view=TicketPanel(self.bot))
             self.bot.store.update(i.guild_id,{'ticket_category':category.id,'support_role':support.id})
         await reply(i,'Ticket system configured ✅')
 
