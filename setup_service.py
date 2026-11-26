@@ -8,6 +8,7 @@ from server_templates import TEMPLATES
 from template_security import member_role_permissions
 from level_rewards import provision_rewards, tracked_reward
 from localization import tr
+from setup_permissions import grantable_permissions, setup_action
 
 
 async def provision_modules(bot, guild, theme, *,
@@ -144,9 +145,13 @@ async def provision_server(bot, guild, theme, *, voice_panel_factory=None,
     for key,name,color in SETUP_ROLES:
         role = setup_role(bot,guild,key,name)
         if role is None:
-            role = await guild.create_role(name=name, colour=discord.Colour(color),
-                permissions=member_role_permissions() if key == "member" else discord.Permissions.none(),
-                mentionable=False, reason="TOV4R roles-only setup; staff rights configured by server owner")
+            requested=member_role_permissions() if key == "member" else discord.Permissions.none()
+            available=guild.me.guild_permissions
+            permissions=grantable_permissions(requested,available)
+            if permissions.value!=requested.value:
+                summary["warnings"].append(name+": some optional permissions were unavailable to the bot.")
+            role = await setup_action("create role "+name,guild.create_role(name=name, colour=discord.Colour(color),
+                permissions=permissions, mentionable=False, reason="TOV4R roles-only setup; staff rights configured by server owner"))
             summary["roles_new"].append(role.name)
         else:
             summary["reused"] += 1
@@ -157,6 +162,6 @@ async def provision_server(bot, guild, theme, *, voice_panel_factory=None,
             # A previously configured automatic role must never become staff.
             if bot.store.config(guild.id)["autorole"] == role.id:
                 bot.store.update(guild.id,{"autorole":0})
-    summary["roles_new"].extend(await provision_rewards(bot,guild))
+    summary["roles_new"].extend(await provision_rewards(bot,guild,warnings=summary["warnings"]))
     bot.store.update(guild.id,{"server_type":theme})
     return summary

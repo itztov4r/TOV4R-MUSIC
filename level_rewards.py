@@ -1,6 +1,7 @@
 """Guild-scoped, non-staff level reward roles. No changes to existing role permissions."""
 import discord
 from store import level
+from setup_permissions import grantable_permissions, setup_action
 
 TIERS = (
     (1, "TOV4R • Rookie", 0x95a5a6, ()),
@@ -32,14 +33,19 @@ def reward_role(bot,guild,threshold):
         return role
     return None
 
-async def provision_rewards(bot,guild):
+async def provision_rewards(bot,guild,*,warnings=None):
     new=[]
     for n,name,color,_ in TIERS:
         if reward_role(bot,guild,n):
             continue
         # Never adopt an unrelated existing role by its name.
-        role=await guild.create_role(name=name,permissions=reward_permissions(n),
-            colour=discord.Colour(color),mentionable=False,reason="TOV4R automatic level rewards")
+        requested=reward_permissions(n)
+        permissions=grantable_permissions(requested,guild.me.guild_permissions)
+        if warnings is not None and permissions.value!=requested.value:
+            if "Some new XP roles have limited permissions because the bot lacks optional permissions." not in warnings:
+                warnings.append("Some new XP roles have limited permissions because the bot lacks optional permissions.")
+        role=await setup_action("create XP role "+name,guild.create_role(name=name,permissions=permissions,
+            colour=discord.Colour(color),mentionable=False,reason="TOV4R automatic level rewards"))
         bot.store.run("INSERT OR REPLACE INTO template_items VALUES(?,?,?,?,?)",
                       (guild.id,TEMPLATE,str(n),role.id,"role"))
         new.append(role.name)

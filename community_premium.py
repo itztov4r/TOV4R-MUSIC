@@ -25,7 +25,7 @@ def welcome_name(name):
 
 def welcome_destination(bot,guild):
     channel=guild.get_channel(bot.store.config(guild.id)["welcome_channel"])
-    if not isinstance(channel,discord.TextChannel) or not welcome_name(channel.name): return None
+    if not guild.me or not isinstance(channel,discord.TextChannel) or not welcome_name(channel.name): return None
     p=channel.permissions_for(guild.me)
     return channel if p.view_channel and p.send_messages and p.embed_links else None
 
