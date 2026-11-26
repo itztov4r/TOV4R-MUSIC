@@ -154,7 +154,7 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("plan_id", data)
         self.assertEqual(data["theme"], "movies")
         self.assertEqual(data["new_channels_estimate"], 0)
-        self.assertEqual(data["new_roles_estimate"], 4)
+        self.assertEqual(data["new_roles_estimate"], 10)
         self.assertEqual(self.guild.channels, {})
         self.assertEqual(self.guild.roles, [])
 

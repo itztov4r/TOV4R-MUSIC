@@ -27,6 +27,7 @@ from server_templates import (
 )
 from focus_setup import candidates, restore_server
 from setup_service import provision_server, SETUP_ROLES, setup_role
+from level_rewards import TIERS, reward_role
 from store import validate_config
 
 LOG = logging.getLogger("tov4r.dashboard")
@@ -296,9 +297,9 @@ class DashboardV2:
     def _plan(self, guild, theme, focus):
         return {
             "theme": theme, "title": "TOV4R Staff & Community",
-            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES],
+            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES] + [name for _,name,_,_ in TIERS],
             "new_categories_estimate": 0, "new_channels_estimate": 0,
-            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES),
+            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS),
             "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
             "warnings": ["Roles only. No channels are created, edited or deleted. No roles assigned.",
                          "The server owner must configure Admin and Moderator permissions manually.",

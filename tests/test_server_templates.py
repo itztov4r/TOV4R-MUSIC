@@ -240,11 +240,18 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
     async def test_roles_only_setup_is_idempotent_and_unprivileged(self):
         from setup_service import provision_server, reserved_staff_role
         result = await provision_server(self.bot,self.guild,"community")
-        self.assertEqual(len(result["roles_new"]),4)
+        self.assertEqual(len(result["roles_new"]),10)
         self.assertEqual(self.guild.channels,{})
         self.assertTrue(all(not r.permissions.administrator for r in self.guild.roles))
         for r in self.guild.roles:
-            self.assertEqual(reserved_staff_role(self.bot,self.guild,r),r.name!="TOV4R Member")
+            self.assertEqual(reserved_staff_role(self.bot,self.guild,r),r.name in {"TOV4R Admin","TOV4R Moderator","TOV4R Support"})
+        from level_rewards import TIERS, reward_role, reward_permissions, tracked_reward
+        for n,_,_,_ in TIERS:
+            role=reward_role(self.bot,self.guild,n)
+            self.assertTrue(tracked_reward(self.bot,self.guild.id,role.id))
+            self.assertEqual(role.permissions.value,reward_permissions(n).value)
+            self.assertFalse(role.permissions.manage_roles)
+            self.assertFalse(role.permissions.manage_guild)
         second=await provision_server(self.bot,self.guild,"community")
         self.assertEqual(second["roles_new"],[])
         self.assertEqual(self.guild.channels,{})

@@ -20,6 +20,7 @@ from security_monitor import SecurityMonitor
 from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format_result
 from focus_setup import focus_server, restore_server, restore_active_template
 from setup_service import provision_server, provision_modules, reserved_staff_role
+from level_rewards import TIERS, reward_role, tracked_reward, grant_rewards
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -147,7 +148,7 @@ class Community(commands.Bot):
             elif self.security.observe(member.guild.id,'join'):
                 await self.security_alert(member.guild,'Join burst','Unusual member joins detected. Automatic roles temporarily paused; check new members manually.')
         role=member.guild.get_role(cfg['autorole'])
-        if role and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
+        if role and not tracked_reward(self,member.guild.id,role.id) and not reserved_staff_role(self,member.guild,role) and safe_role(role,member.guild) and not (cfg['security_enabled'] and (member.bot or self.security.paused(member.guild.id))):
             try: await member.add_roles(role,reason='TOV4R Auto-role')
             except discord.HTTPException: await self.audit(member.guild,'Auto-role error',str(member.id))
         c=member.guild.get_channel(cfg['welcome_channel'])
@@ -208,6 +209,7 @@ class Community(commands.Bot):
             if not self.store.one('SELECT channel FROM tickets WHERE guild=? AND channel=?',(message.guild.id,message.channel.id)):
                 self.store.count_message(message.guild.id,message.author.id)
             up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
+            await grant_rewards(self,message.author)
             if up is not None:
                 try: await message.channel.send(embed=embed('Level up!',f'{message.author.mention} wsel level **{up}** 🎉'))
                 except discord.HTTPException: pass
@@ -316,6 +318,9 @@ class Community(commands.Bot):
             elapsed=min(60,max(0,int(round(now-self.voice_sample_at))))
             for guild_id,user_id,_ in current & self.voice_previous:
                 self.store.award_voice(guild_id,user_id,elapsed)
+                guild=self.get_guild(guild_id)
+                member=guild.get_member(user_id) if guild else None
+                if member: await grant_rewards(self,member)
         self.voice_previous=current
         self.voice_sample_at=now
 
@@ -570,7 +575,7 @@ class RolePanel(ErrorView):
             b=discord.ui.Button(label=label[:80],custom_id=f'role:{rid}',style=discord.ButtonStyle.secondary)
             async def callback(i,role_id=rid):
                 r=i.guild.get_role(role_id)
-                if not r or reserved_staff_role(bot,i.guild,r) or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
+                if not r or tracked_reward(bot,i.guild_id,r.id) or reserved_staff_role(bot,i.guild,r) or not safe_role(r,i.guild): return await reply(i,'Had role ma9adrch n3tih. Admin khas ycheck permissions.')
                 await i.response.defer(ephemeral=True)
                 if r in i.user.roles: await i.user.remove_roles(r,reason='Self role')
                 else: await i.user.add_roles(r,reason='Self role')
@@ -613,7 +618,7 @@ class Features(commands.Cog):
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
         await i.response.send_message(embed=embed('TOV4R • Command center',
-            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /serverinfo\n'
+            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
             '**Staff**\n/setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
@@ -623,14 +628,26 @@ class Features(commands.Cog):
             '/server private_channel (admin confirmation before edits)\n'
             '**Dashboard**\nPrivate local admin dashboard; see README.'),ephemeral=True)
     @app_commands.guild_only()
-    @app_commands.command(description='Create Admin, Moderator, Support and Member roles only')
+    @app_commands.command(description='Create staff roles and automatic safe level reward roles')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup(self,i:discord.Interaction):
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('setup',i.guild_id)]:
             summary=await provision_server(self.bot,i.guild,self.bot.store.config(i.guild_id)['server_type'])
             await self.bot.audit(i.guild,'Roles setup',f'By {i.user.id}')
-        await reply(i,'✅ Roles setup complete. New: '+str(len(summary['roles_new']))+' • Reused: '+str(summary['reused'])+'. No channels created or removed. Admin/Moderator rights must be configured manually by the server owner. No roles assigned automatically.')
+        await reply(i,'✅ Roles setup complete. New: '+str(len(summary['roles_new']))+' • Reused: '+str(summary['reused'])+'. No channels created or removed. Admin/Moderator rights must be configured manually by the server owner. Staff roles are never assigned automatically; XP rewards are granted to eligible members.')
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Show level reward roles and collect eligible rewards')
+    async def level_rewards(self,i:discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        granted=await grant_rewards(self.bot,i.user)
+        e=embed('TOV4R • Level rewards','Rewards are optional community perks, not staff access. Use /setup to install them.')
+        for n,name,_,_ in TIERS:
+            role=reward_role(self.bot,i.guild,n)
+            e.add_field(name=f'Level {n}',value=role.mention if role else name+' (not installed)',inline=True)
+        if granted: e.add_field(name='Rewards received',value=', '.join(granted),inline=False)
+        await i.followup.send(embed=e,ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.command(description='Create only missing bot service channels for voice, tickets, welcome and logs')
@@ -664,7 +681,8 @@ class Features(commands.Cog):
         changes={}
         for k,v in [('welcome_channel',welcome),('logs_channel',logs),('support_role',support),('autorole',autorole)]:
             if v: changes[k]=v.id
-        if autorole and (reserved_staff_role(self.bot,i.guild,autorole) or not safe_role(autorole,i.guild) or (support and support.id==autorole.id)): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
+        if support and tracked_reward(self.bot,i.guild_id,support.id): raise ValueError('Level rewards cannot be staff roles.')
+        if autorole and (tracked_reward(self.bot,i.guild_id,autorole.id) or reserved_staff_role(self.bot,i.guild,autorole) or not safe_role(autorole,i.guild) or (support and support.id==autorole.id)): raise ValueError('Auto-role khas ykon bla dangerous permissions, w ta7t bot role.')
         for k,v in [('levels',levels),('antispam',antispam),('anti_invites',anti_invites)]:
             if v is not None: changes[k]=v
         self.bot.store.update(i.guild_id,changes)
@@ -720,7 +738,7 @@ class Features(commands.Cog):
     @app_commands.command(description='Configure private support tickets and publish the ticket panel')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ticket_setup(self,i:discord.Interaction,category:discord.CategoryChannel,support:discord.Role,panel:discord.TextChannel|None=None):
-        if support.is_default() or support.managed:
+        if support.is_default() or support.managed or tracked_reward(self.bot,i.guild_id,support.id):
             raise ValueError('Choose a dedicated staff role, not everyone or a managed role.')
         if i.user.id!=i.guild.owner_id and support>=i.user.top_role:
             raise ValueError('Support role must be below your highest role.')
@@ -742,7 +760,7 @@ class Features(commands.Cog):
     @app_commands.command(description='Publish a safe self-service role button')
     @app_commands.checks.has_permissions(manage_roles=True)
     async def rolepanel(self,i:discord.Interaction,role:discord.Role):
-        if reserved_staff_role(self.bot,i.guild,role) or not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
+        if tracked_reward(self.bot,i.guild_id,role.id) or reserved_staff_role(self.bot,i.guild,role) or not safe_role(role,i.guild) or (i.user.id!=i.guild.owner_id and role>=i.user.top_role): raise ValueError('Role unsafe or too high in hierarchy.')
         await i.response.defer(ephemeral=True)
         roles=[(role.id,role.name)]
         m=await i.channel.send(embed=embed('Choose your role',f'Click to add / remove **{role.name}**.'),view=RolePanel(self.bot,roles))

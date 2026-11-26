@@ -6,6 +6,7 @@ startup. Existing panels and channels are reused instead of replaced.
 import discord
 from server_templates import TEMPLATES
 from template_security import member_role_permissions
+from level_rewards import provision_rewards, tracked_reward
 
 
 async def provision_modules(bot, guild, theme, *,
@@ -101,7 +102,7 @@ SETUP_ROLES = (("admin", "TOV4R Admin", 0xef3340),
 def setup_role(bot, guild, key, name):
     if key == "support":
         role = guild.get_role(bot.store.config(guild.id)["support_role"])
-        if role and not role.managed and role.id != guild.default_role.id:
+        if role and not role.managed and role.id != guild.default_role.id and not tracked_reward(bot,guild.id,role.id):
             return role
     tracked = bot.store.one("SELECT discord_id FROM template_items WHERE guild=? AND template=? AND item_key=?",
                             (guild.id, "__staff_setup__", key))
@@ -151,5 +152,6 @@ async def provision_server(bot, guild, theme, *, voice_panel_factory=None,
             # A previously configured automatic role must never become staff.
             if bot.store.config(guild.id)["autorole"] == role.id:
                 bot.store.update(guild.id,{"autorole":0})
+    summary["roles_new"].extend(await provision_rewards(bot,guild))
     bot.store.update(guild.id,{"server_type":theme})
     return summary
