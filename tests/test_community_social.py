@@ -1,6 +1,6 @@
 import unittest
 from store import Store
-from community_social import cast_vote,birthday_date,CommunitySocial,SocialView
+from community_social import cast_vote,birthday_date,CommunitySocial,SocialView,check_post_content
 from types import SimpleNamespace
 
 class SocialTest(unittest.IsolatedAsyncioTestCase):
@@ -19,4 +19,6 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(birthday_date(2,29).day,29)
         with self.assertRaises(ValueError): birthday_date(2,30)
         self.assertEqual({c.name for c in CommunitySocial.__cog_app_commands__},{"suggest","poll","event","starboard","community_close","birthday","counters","custom_embed"})
+        with self.assertRaises(ValueError): check_post_content({'blocked_words':'blocked','anti_invites':False},'BLOCKED')
+        with self.assertRaises(ValueError): check_post_content({'blocked_words':'','anti_invites':True},'discord.gg/test')
         s.db.close()

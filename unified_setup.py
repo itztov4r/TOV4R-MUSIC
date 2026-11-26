@@ -65,12 +65,13 @@ async def provision_all(bot,guild,theme,*,voice_panel_factory,ticket_panel_facto
         logs=await guild.create_text_channel("tov4r-private-logs",overwrites=private,reason="TOV4R unified setup")
         update(logs_channel=logs.id); summary["channels_new"].append(logs.name)
     community=guild.get_channel(cfg["community_channel"])
-    if not public_panel(community,guild):
+    if not isinstance(community,discord.TextChannel):
         community=await guild.create_text_channel("tov4r-community",overwrites={
-            guild.default_role:discord.PermissionOverwrite(view_channel=True,send_messages=True),
+            guild.default_role:discord.PermissionOverwrite(send_messages=True),
             guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,embed_links=True,read_message_history=True)
         },reason="TOV4R community modules")
         update(community_channel=community.id); summary["channels_new"].append(community.name)
+    if not public_panel(community,guild): summary["warnings"].append("Community channel not public or missing bot permissions; configure access manually.")
     if not private_log(guild.get_channel(cfg["security_channel"]),guild): update(security_channel=logs.id)
     first=not tracked(bot,guild,"initialized")
     if security is not None or first:

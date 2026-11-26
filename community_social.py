@@ -1,6 +1,7 @@
 """Community features: explicit participation, bounded votes, no mass mentions."""
 import datetime as dt
 import json
+import re
 import time
 import discord
 from discord import app_commands
@@ -9,6 +10,12 @@ from discord.ext import commands
 NONE=discord.AllowedMentions.none()
 COLORS={"ruby":0xef3340,"ocean":0x3498db,"violet":0x9b59b6,"emerald":0x2ecc71}
 LABELS={"suggestion":["👍 Support","👎 Oppose"],"event":["Going","Not going"],"star":["⭐ Appreciate"]}
+
+def check_post_content(cfg,text):
+    words=[w.strip().casefold() for w in cfg["blocked_words"].split(",") if w.strip()]
+    if any(w in text.casefold() for w in words): raise ValueError("Post contains a filtered word.")
+    if cfg["anti_invites"] and re.search(r"(discord\.gg/|discord(?:app)?\.com/invite/)",text,re.I):
+        raise ValueError("Discord invites are disabled on this server.")
 
 def birthday_date(month,day):
     try: return dt.date(2000,month,day)
@@ -85,6 +92,7 @@ class CommunitySocial(commands.Cog):
         channel=community_channel(self.bot,i.guild)
         if not channel: raise ValueError("Run /setup to configure a public community channel.")
         if not channel.permissions_for(i.user).view_channel: raise ValueError("No access to community channel.")
+        check_post_content(self.bot.store.config(i.guild_id)," ".join([title,body,*labels]))
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[("social-create",i.guild_id,i.user.id)]:
             if kind in ("suggestion","star"):
@@ -120,7 +128,7 @@ class CommunitySocial(commands.Cog):
     async def starboard(self,i:discord.Interaction,message_id:str):
         c=community_channel(self.bot,i.guild)
         if not c or i.channel_id!=c.id: raise ValueError("Use this in the community channel.")
-        if not message_id.isdecimal() or len(message_id)>19: raise ValueError("Valid message ID required.")
+        if not message_id.isdecimal() or len(message_id)>19 or int(message_id)>9223372036854775807: raise ValueError("Valid message ID required.")
         if not c.permissions_for(i.user).read_message_history: raise ValueError("No message history access.")
         m=await c.fetch_message(int(message_id))
         if m.author.id!=i.user.id or m.author.bot: raise ValueError("Only your own message can be nominated.")
