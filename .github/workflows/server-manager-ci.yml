@@ -88,16 +88,10 @@ jobs:
           assert 'permissions' in parts and int(parts['permissions'][0]) > 0
           assert int(parts['permissions'][0]) & (1 << 3) == 0, 'Administrator must never be requested'
           print('Guild install URL and least-privilege flags verified')
-          # /setup must display a type picker in Discord.
+          # Setup is now roles-only. Themed channels are no longer created.
           from bot import Features
-          setups = [cmd for cmd in Features.__cog_app_commands__ if cmd.name == 'setup']
-          assert len(setups) == 1
-          fields = {param.name: param for param in setups[0].parameters}
-          assert 'type' in fields, f'Missing type parameter: {list(fields)}'
-          assert 'cleanup' in fields, 'Missing cleanup option'
-          assert 'focus' in fields, 'Missing focus mode option'
-          assert any(cmd.name == 'restore_layout' for cmd in Features.__cog_app_commands__)
-          assert len(fields['type'].choices) == 9
-          assert any(ch.value == 'movies' for ch in fields['type'].choices)
-          print('/setup type picker verified')
+          cmds = {cmd.name: cmd for cmd in Features.__cog_app_commands__}
+          assert not cmds['setup'].parameters
+          assert {'setup_modules','restore_layout','level_rewards'} <= set(cmds)
+          print('/setup roles-only and reward commands verified')
           PY
