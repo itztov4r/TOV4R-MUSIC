@@ -22,6 +22,7 @@ from focus_setup import focus_server, restore_server, restore_active_template
 from setup_service import provision_server, provision_modules, reserved_staff_role
 from level_rewards import TIERS, reward_role, tracked_reward, grant_rewards
 from cosmetics import CATALOG, STARTER_CREDITS
+from community_tools import eligible, save_backup, read_backup, restore_settings
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -350,6 +351,14 @@ class Community(commands.Bot):
             if not self.spam[key] or now-self.spam[key][-1]>60: del self.spam[key]
     @maintenance.before_loop
     async def before_maintenance(self): await self.wait_until_ready()
+    def giveaway_rules(self,r):
+        return self.store.one('SELECT * FROM giveaway_rules WHERE guild=? AND message=?',(r['guild'],r['message'])) or {'min_level':0,'role_id':0,'cosmetic':''}
+    def giveaway_embed(self,r):
+        rules=self.giveaway_rules(r)
+        count=self.store.one('SELECT COUNT(*) n FROM entries WHERE message=?',(r['message'],))['n']
+        text=f"Ends <t:{int(r['ends'])}:R> • Winners: {r['count']}\nParticipants: **{count}**\nMinimum level: {rules['min_level']}"
+        if rules['role_id']: text+=f"\nRequired role: <@&{rules['role_id']}>"
+        return embed('🎁 '+r['prize'],text+'\nFree participation. Click to join or leave.')
     async def finish_giveaway(self,mid,reroll=False):
         async with self.locks[('giveaway',mid)]:
             r=self.store.one('SELECT * FROM giveaways WHERE message=?',(mid,))
@@ -358,9 +367,16 @@ class Community(commands.Bot):
             g=self.get_guild(r['guild']); c=g.get_channel(r['channel']) if g else None
             if not c: return
             if r['state']=='open' or reroll:
-                ids=[e['user'] for e in self.store.all('SELECT user FROM entries WHERE message=?',(mid,)) if g.get_member(e['user'])]
+                rules=self.giveaway_rules(r)
+                previous=set(json.loads(r['winners'])) if reroll else set()
+                ids=[e['user'] for e in self.store.all('SELECT user FROM entries WHERE message=?',(mid,)) if e['user'] not in previous and eligible(self.store,g.get_member(e['user']),rules)]
+                if reroll and not ids: raise ValueError('No other eligible participants.')
                 winners=secrets.SystemRandom().sample(ids,min(len(ids),r['count']))
-                self.store.run("UPDATE giveaways SET state='drawn',winners=? WHERE message=?",(json.dumps(winners),mid))
+                with self.store.db:
+                    self.store.db.execute("UPDATE giveaways SET state='drawn',winners=? WHERE message=?",(json.dumps(winners),mid))
+                    if rules['cosmetic'] in CATALOG:
+                        for uid in winners:
+                            self.store.db.execute('INSERT OR IGNORE INTO cosmetic_inventory VALUES(?,?,?)',(g.id,uid,rules['cosmetic']))
             else: winners=json.loads(r['winners'])
             text=', '.join(f'<@{u}>' for u in winners) or 'No eligible participants.'
             try:
@@ -563,11 +579,15 @@ class GiveawayPanel(ErrorView):
     async def toggle(self,i):
         async with self.bot.locks[('giveaway',self.mid)]:
             r=self.bot.store.one('SELECT * FROM giveaways WHERE message=?',(self.mid,))
-            if not r or r['state']!='open' or r['ends']<=time.time(): return await reply(i,'Giveaway sala.')
+            if not r or r['guild']!=i.guild_id or r['state']!='open' or r['ends']<=time.time(): return await reply(i,'Giveaway sala.')
             old=self.bot.store.one('SELECT * FROM entries WHERE message=? AND user=?',(self.mid,i.user.id))
             if old: self.bot.store.run('DELETE FROM entries WHERE message=? AND user=?',(self.mid,i.user.id))
-            else: self.bot.store.run('INSERT INTO entries VALUES(?,?)',(self.mid,i.user.id))
-            await reply(i,'Khrejti mn giveaway.' if old else 'Dkhelti l giveaway ✅ Good luck!')
+            else:
+                if not eligible(self.bot.store,i.user,self.bot.giveaway_rules(r)): return await reply(i,'You do not meet the participation requirements.')
+                self.bot.store.run('INSERT INTO entries VALUES(?,?)',(self.mid,i.user.id))
+            await reply(i,'Khrejti mn giveaway.' if old else 'Dkhelti l giveaway ✅')
+            try: await i.message.edit(embed=self.bot.giveaway_embed(r))
+            except discord.HTTPException: pass
 
 class RolePanel(ErrorView):
     def __init__(self,bot,roles):
@@ -623,7 +643,7 @@ class Features(commands.Cog):
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
             '**Staff**\n/setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
-            '/giveaway · /giveaway_end · /giveaway_reroll · /transcript\n'
+            '/giveaway · /giveaway_end · /giveaway_reroll · /giveaway_history · /transcript\n/backup · /backup_list · /backup_restore\n'
             '**Server Manager**\n/server scan · /server bots · /server fix_everyone\n'
             '/server harden_role · /server remove_role · /server move_channel\n'
             '/server private_channel (admin confirmation before edits)\n'
@@ -953,11 +973,62 @@ class Features(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(description='Start a timed giveaway with persistent participation buttons')
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def giveaway(self,i:discord.Interaction,prize:app_commands.Range[str,1,200],minutes:app_commands.Range[int,1,43200],winners:app_commands.Range[int,1,20]=1):
+    @app_commands.choices(prize=[app_commands.Choice(name=v[0],value=k) for k,v in CATALOG.items()])
+    async def giveaway(self,i:discord.Interaction,prize:str,minutes:app_commands.Range[int,1,43200],winners:app_commands.Range[int,1,20]=1,min_level:app_commands.Range[int,0,100]=0,required_role:discord.Role|None=None):
+        if prize not in CATALOG: raise ValueError('Choose a free profile cosmetic.')
         await i.response.defer(ephemeral=True); ends=time.time()+minutes*60
-        m=await i.channel.send(embed=embed('🎉 '+prize,f'Ends <t:{int(ends)}:R> • Winners: {winners}\nClick below to participate.'))
-        self.bot.store.run('INSERT INTO giveaways(message,guild,channel,prize,ends,count) VALUES(?,?,?,?,?,?)',(m.id,i.guild_id,i.channel_id,prize,ends,winners))
-        await m.edit(view=GiveawayPanel(self.bot,m.id)); await reply(i,f'Giveaway started ✅ ID: {m.id}')
+        name=CATALOG[prize][0]+' cosmetic'
+        m=await i.channel.send(embed=embed('🎁 '+name,'Preparing free event…'))
+        with self.bot.store.db:
+            self.bot.store.db.execute('INSERT INTO giveaways(message,guild,channel,prize,ends,count) VALUES(?,?,?,?,?,?)',(m.id,i.guild_id,i.channel_id,name,ends,winners))
+            self.bot.store.db.execute('INSERT INTO giveaway_rules VALUES(?,?,?,?,?)',(m.id,i.guild_id,min_level,required_role.id if required_role else 0,prize))
+        r=self.bot.store.one('SELECT * FROM giveaways WHERE message=?',(m.id,))
+        await m.edit(embed=self.bot.giveaway_embed(r),view=GiveawayPanel(self.bot,m.id))
+        await reply(i,f'Free cosmetic event started ✅ ID: {m.id}')
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Staff: view recent giveaway history on this server')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def giveaway_history(self,i:discord.Interaction):
+        rows=self.bot.store.all('SELECT * FROM giveaways WHERE guild=? ORDER BY ends DESC LIMIT 10',(i.guild_id,))
+        e=embed('TOV4R • Giveaway history')
+        for r in rows:
+            n=self.bot.store.one('SELECT COUNT(*) n FROM entries WHERE message=?',(r['message'],))['n']
+            e.add_field(name=r['prize'],value=f"{r['state']} • {n} entries • ID: {r['message']}",inline=False)
+        if not rows: e.description='No events yet.'
+        await i.response.send_message(embed=e,ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Owner: save and download a private server structure and bot settings backup')
+    async def backup(self,i:discord.Interaction):
+        if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
+        await i.response.defer(ephemeral=True)
+        from server_manager import snapshot
+        bid=save_backup(self.bot.store,i.guild_id,snapshot(i.guild))
+        payload=json.dumps(read_backup(self.bot.store,i.guild_id,bid),ensure_ascii=False,indent=2).encode()
+        await i.followup.send(f'Backup #{bid}. Includes roles, channels, permissions and selected bot settings. No messages. Keep private.',file=discord.File(io.BytesIO(payload),filename=f'tov4r-backup-{bid}.json'),ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Owner: list saved server backup IDs')
+    async def backup_list(self,i:discord.Interaction):
+        if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
+        rows=self.bot.store.all('SELECT id,created FROM community_backups WHERE guild=? ORDER BY id DESC LIMIT 5',(i.guild_id,))
+        await reply(i,'\n'.join(f"#{r['id']} • <t:{int(r['created'])}:F>" for r in rows) or 'No backups. Use /backup.')
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Owner: preview or restore bot settings only from a server backup')
+    async def backup_restore(self,i:discord.Interaction,backup_id:app_commands.Range[int,1,2147483647],confirm:bool=False):
+        if i.user.id!=i.guild.owner_id: raise ValueError('Server owner only.')
+        data=read_backup(self.bot.store,i.guild_id,backup_id)
+        cfg=self.bot.store.config(i.guild_id)
+        diff=[k for k,v in data['settings'].items() if cfg.get(k)!=v]
+        if not confirm:
+            return await reply(i,'Settings to restore: '+(', '.join(diff) or 'No changes')+'. Roles and channels are never modified. Run again with confirm:True to apply.')
+        changes=restore_settings(self.bot.store,i.guild_id,backup_id)
+        self.bot.voice_previous={k for k in self.bot.voice_previous if k[0]!=i.guild_id}
+        self.bot.security.clear(i.guild_id)
+        await reply(i,'Bot settings restored. Discord roles, channels and permissions unchanged.')
+
     async def get_giveaway(self,i,message_id):
         if not message_id.isdecimal(): raise ValueError('Message ID required.')
         r=self.bot.store.one('SELECT * FROM giveaways WHERE message=? AND guild=?',(int(message_id),i.guild_id))

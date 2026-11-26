@@ -41,6 +41,8 @@ jobs:
           assert not cog.enabled
           assert not cog.allowed(SimpleNamespace(guild=None))
           PY
+      - name: Test backup isolation and event eligibility
+        run: python -m unittest discover -s tests -p 'test_community_tools.py' -v
       - name: Test free cosmetic wallet and profile inventory
         run: python -m unittest discover -s tests -p 'test_cosmetics.py' -v
       - name: Test activity isolation and voice XP cap

@@ -55,6 +55,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,guild INTEGER,kind TEXT,detail TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS giveaways(message INTEGER PRIMARY KEY,guild INTEGER,channel INTEGER,prize TEXT,ends REAL,count INTEGER,state TEXT DEFAULT 'open',winners TEXT DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS entries(message INTEGER,user INTEGER,PRIMARY KEY(message,user));
+        CREATE TABLE IF NOT EXISTS giveaway_rules(message INTEGER PRIMARY KEY,guild INTEGER NOT NULL,min_level INTEGER NOT NULL,role_id INTEGER NOT NULL,cosmetic TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS community_backups(id INTEGER PRIMARY KEY AUTOINCREMENT,guild INTEGER NOT NULL,created REAL NOT NULL,body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS role_panels(message INTEGER PRIMARY KEY,guild INTEGER,roles TEXT);
         CREATE TABLE IF NOT EXISTS template_items(
             guild INTEGER NOT NULL, template TEXT NOT NULL,

@@ -62,6 +62,12 @@ async def start_dashboard(bot):
         bot.store.update(gid,changes)
         await bot.audit(g,'Dashboard configuration','Settings saved by dashboard owner.')
         return web.json_response({'ok':True})
+    async def public_stats(request):
+        # Only a global server count and connection status; never expose guild IDs or user data.
+        ready=bot.is_ready()
+        return web.json_response({'online':ready,'servers':len(bot.guilds) if ready else None},
+            headers={'Access-Control-Allow-Origin':'https://tov4r.xyz','Vary':'Origin'})
+    app.router.add_get('/public/stats',public_stats)
     app.router.add_get('/',index); app.router.add_get('/assets/{name}',asset)
     app.router.add_get('/api/state',state); app.router.add_put('/api/guild/{guild}',update)
     from web_dashboard_v2 import add_dashboard_v2
