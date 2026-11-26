@@ -21,6 +21,7 @@ from server_templates import TEMPLATE_CHOICES, TEMPLATES, apply_template, format
 from focus_setup import focus_server, restore_server, restore_active_template
 from setup_service import provision_server, provision_modules, reserved_staff_role
 from level_rewards import TIERS, reward_role, tracked_reward, grant_rewards
+from cosmetics import CATALOG, STARTER_CREDITS
 
 load_dotenv()
 log = logging.getLogger('tov4r')
@@ -618,7 +619,7 @@ class Features(commands.Cog):
     @app_commands.command(name='help',description='All Tov4r Bot commands')
     async def help_command(self,i:discord.Interaction):
         await i.response.send_message(embed=embed('TOV4R • Command center',
-            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /serverinfo\n'
+            '**Members**\n/help · /invite · /profile · /rank · /leaderboard · /voice_top · /level_rewards · /shop · /wallet · /inventory · /cosmetic_buy · /cosmetic_equip · /serverinfo\n'
             '**Voice**\nدخل للروم ديالك وكتب .v help باش تشوف أوامر التحكم بالدارجة.\n'
             '**Staff**\n/setup · /setup_modules · /configure · /panels · /ticket_setup · /voice_xp\n/rolepanel · /announce · /security_setup · /security_status\n'
             '/warn · /warnings · /timeout · /untimeout · /kick · /ban · /unban · /purge\n'
@@ -776,6 +777,10 @@ class Features(commands.Cog):
         filled=min(10,max(0,progress*10//(goal-start)))
         rank=self.bot.store.one('SELECT COUNT(*) n FROM xp WHERE guild=? AND points>?',(guild_id,points))['n']+1
         e=embed('✦ TOV4R • Member profile',discord.utils.escape_markdown(member.display_name))
+        cosmetics=self.bot.store.cosmetic_profile(guild_id,member.id)
+        theme=CATALOG.get(cosmetics['theme'])
+        if theme and theme[1]=='theme': e.colour=discord.Colour(theme[3])
+        badge=CATALOG.get(cosmetics['badge'])
         e.set_thumbnail(url=member.display_avatar.url)
         e.add_field(name='🏆 Level',value=str(lv))
         e.add_field(name='⚡ XP',value=f'{points:,}')
@@ -787,10 +792,53 @@ class Features(commands.Cog):
         badges=['🌱 Member']
         if lv>=5: badges.append('⭐ Level 5')
         if lv>=10: badges.append('🏆 Level 10')
+        if badge and badge[1]=='badge': badges.append(badge[3])
         e.add_field(name='Badges',value=' • '.join(badges))
         e.add_field(name='Next level',value=f'`{"█"*filled+"░"*(10-filled)}`\n{progress:,} / {goal-start:,} XP • {goal-points:,} remaining',inline=False)
         e.set_footer(text='TOV4R • Server XP • Activity counted since this update')
         return e
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Browse free virtual-credit profile cosmetics')
+    async def shop(self,i:discord.Interaction):
+        account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
+        e=embed('TOV4R • Cosmetic Shop',f"Balance: **{account['credits']} TOV Credits**. Every member receives {STARTER_CREDITS} free credits, enough for all current items. No real money or staff permissions.")
+        for key,(name,category,price,_) in CATALOG.items():
+            e.add_field(name=name+' • '+category.title(),value='Owned' if key in account['items'] else f'{price} credits • /cosmetic_buy',inline=True)
+        await i.response.send_message(embed=e,ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(description='View your private cosmetic credit balance')
+    async def wallet(self,i:discord.Interaction):
+        account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
+        await reply(i,f"Balance: {account['credits']} TOV Credits. Free, server-specific and non-transferable.")
+
+    @app_commands.guild_only()
+    @app_commands.command(description='View your owned profile cosmetics')
+    async def inventory(self,i:discord.Interaction):
+        account=self.bot.store.cosmetic_account(i.guild_id,i.user.id)
+        lines=[CATALOG[k][0]+(' • Equipped' if k in (account['theme'],account['badge']) else '') for k in account['items'] if k in CATALOG]
+        await i.response.send_message(embed=embed('TOV4R • Inventory','\n'.join(lines) or 'No items yet. Use /shop.'),ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Purchase a fixed-price cosmetic with free credits')
+    @app_commands.choices(item=[app_commands.Choice(name=f'{v[0]} ({v[2]} credits)',value=k) for k,v in CATALOG.items()])
+    async def cosmetic_buy(self,i:discord.Interaction,item:str):
+        result=self.bot.store.cosmetic_buy(i.guild_id,i.user.id,item)
+        await reply(i,{'purchased':'Cosmetic unlocked. Use /cosmetic_equip to display it.','already_owned':'You already own this cosmetic. No credits charged.','insufficient':'Not enough credits.'}[result])
+
+    @app_commands.guild_only()
+    @app_commands.command(description='Equip an owned profile theme or badge')
+    @app_commands.choices(item=[app_commands.Choice(name=v[0],value=k) for k,v in CATALOG.items()]+[app_commands.Choice(name='Default theme',value='reset_theme'),app_commands.Choice(name='Remove cosmetic badge',value='reset_badge')])
+    async def cosmetic_equip(self,i:discord.Interaction,item:str):
+        if item in ('reset_theme','reset_badge'):
+            category=item.split('_',1)[1]
+            item=''
+        elif item in CATALOG: category=CATALOG[item][1]
+        else: return await reply(i,'Unknown cosmetic.')
+        if not self.bot.store.cosmetic_equip(i.guild_id,i.user.id,category,item):
+            return await reply(i,'Unlock this cosmetic in /shop first.')
+        await reply(i,'Profile updated. See /profile.')
 
     @app_commands.guild_only()
     @app_commands.command(description='View a member profile, level, rank and XP progress')

@@ -4,6 +4,7 @@ import math
 import sqlite3
 import time
 from pathlib import Path
+from cosmetics import CATALOG, STARTER_CREDITS
 
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
@@ -47,6 +48,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS ticket_deletions(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,due REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS ticket_transcripts(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,body BLOB NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS xp(guild INTEGER,user INTEGER,points INTEGER DEFAULT 0,last REAL DEFAULT 0,PRIMARY KEY(guild,user));
+        CREATE TABLE IF NOT EXISTS cosmetic_wallet(guild INTEGER NOT NULL,user INTEGER NOT NULL,credits INTEGER NOT NULL CHECK(credits>=0),theme TEXT NOT NULL DEFAULT '',badge TEXT NOT NULL DEFAULT '',PRIMARY KEY(guild,user));
+        CREATE TABLE IF NOT EXISTS cosmetic_inventory(guild INTEGER NOT NULL,user INTEGER NOT NULL,item TEXT NOT NULL,PRIMARY KEY(guild,user,item));
         CREATE TABLE IF NOT EXISTS activity(guild INTEGER NOT NULL,user INTEGER NOT NULL,messages INTEGER NOT NULL DEFAULT 0,voice_seconds INTEGER NOT NULL DEFAULT 0,voice_day INTEGER NOT NULL DEFAULT -1,daily_voice_seconds INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS warnings(id INTEGER PRIMARY KEY,guild INTEGER,user INTEGER,moderator INTEGER,reason TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,guild INTEGER,kind TEXT,detail TEXT,at REAL);
@@ -99,6 +102,35 @@ class Store:
         before = r['points'] if r else 0
         self.run('INSERT OR REPLACE INTO xp VALUES(?,?,?,?)',(guild,user,before+20,now))
         return level(before+20) if level(before+20)>level(before) else None
+    def cosmetic_profile(self,guild,user):
+        return self.one('SELECT theme,badge FROM cosmetic_wallet WHERE guild=? AND user=?',(guild,user)) or {'theme':'','badge':''}
+    def cosmetic_account(self,guild,user):
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO cosmetic_wallet(guild,user,credits) VALUES(?,?,?)',(guild,user,STARTER_CREDITS))
+        row=self.one('SELECT credits,theme,badge FROM cosmetic_wallet WHERE guild=? AND user=?',(guild,user))
+        row['items']=[r['item'] for r in self.all('SELECT item FROM cosmetic_inventory WHERE guild=? AND user=? ORDER BY item',(guild,user))]
+        return row
+    def cosmetic_buy(self,guild,user,item):
+        if item not in CATALOG: raise ValueError('Unknown cosmetic.')
+        price=CATALOG[item][2]
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO cosmetic_wallet(guild,user,credits) VALUES(?,?,?)',(guild,user,STARTER_CREDITS))
+            if self.db.execute('SELECT 1 FROM cosmetic_inventory WHERE guild=? AND user=? AND item=?',(guild,user,item)).fetchone():
+                return 'already_owned'
+            if not self.db.execute('UPDATE cosmetic_wallet SET credits=credits-? WHERE guild=? AND user=? AND credits>=?',(price,guild,user,price)).rowcount:
+                return 'insufficient'
+            self.db.execute('INSERT INTO cosmetic_inventory VALUES(?,?,?)',(guild,user,item))
+        return 'purchased'
+    def cosmetic_equip(self,guild,user,category,item):
+        if category not in ('theme','badge'): raise ValueError('Invalid category.')
+        if item and (item not in CATALOG or CATALOG[item][1]!=category):
+            raise ValueError('Invalid cosmetic.')
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO cosmetic_wallet(guild,user,credits) VALUES(?,?,?)',(guild,user,STARTER_CREDITS))
+            if item and not self.db.execute('SELECT 1 FROM cosmetic_inventory WHERE guild=? AND user=? AND item=?',(guild,user,item)).fetchone():
+                return False
+            self.db.execute(f'UPDATE cosmetic_wallet SET {category}=? WHERE guild=? AND user=?',(item,guild,user))
+        return True
     def voice_preferences(self,guild,user):
         return self.one('SELECT name,user_limit FROM voice_preferences WHERE guild=? AND user=?',(guild,user))
     def save_voice_preferences(self,guild,user,name,user_limit):
