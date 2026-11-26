@@ -43,6 +43,8 @@ jobs:
           PY
       - name: Test activity isolation and voice XP cap
         run: python -m unittest discover -s tests -p 'test_activity.py' -v
+      - name: Test persistent room preferences and voice panel
+        run: python -m unittest discover -s tests -p 'test_voice_preferences.py' -v
       - name: Test guild-scoped security monitoring
         run: python -m unittest discover -s tests -p 'test_security_monitor.py' -v
       - name: Test ticket categories and single staff claim

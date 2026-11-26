@@ -245,7 +245,10 @@ class Community(commands.Bot):
                                 member:discord.PermissionOverwrite(view_channel=True,connect=True)}
                     channel=None
                     try:
-                        channel=await member.guild.create_voice_channel(f'🔊 {member.display_name}'[:100],category=cat,overwrites=overwrites,reason='TOV4R Join to Create')
+                        prefs=self.store.voice_preferences(member.guild.id,member.id)
+                        name=prefs['name'] if prefs else f'🔊 {member.display_name}'[:100]
+                        limit=prefs['user_limit'] if prefs else 0
+                        channel=await member.guild.create_voice_channel(name,category=cat,user_limit=limit,overwrites=overwrites,reason='TOV4R Join to Create')
                         self.store.run('INSERT INTO rooms VALUES(?,?,?)',(channel.id,member.guild.id,member.id))
                         await member.move_to(channel)
                         await self.audit(member.guild,'Voice created',f'{channel.name} • Owner {member.id}')
@@ -420,8 +423,9 @@ class RoomUserSelect(discord.ui.UserSelect):
 class VoicePanel(ErrorView):
     def __init__(self,bot):
         super().__init__(timeout=None); self.bot=bot
-        for action,label in [('lock','🔒 Lock'),('unlock','🔓 Unlock'),('hide','👻 Hide'),('show','👁 Show'),('rename','✏ Rename'),('limit','👥 Limit'),('permit','✅ Permit'),('kick','⛔ Kick / block'),('transfer','👑 Transfer'),('claim','🙋 Claim')]:
-            b=discord.ui.Button(label=label,custom_id='voice:'+action,style=discord.ButtonStyle.secondary)
+        for action,label in [('lock','🔒 Lock'),('unlock','🔓 Unlock'),('hide','👻 Hide'),('show','👁 Show'),('rename','✏ Rename'),('limit','👥 Limit'),('permit','✅ Permit'),('kick','⛔ Kick / block'),('transfer','👑 Transfer'),('claim','🙋 Claim'),('info','ℹ️ Room info'),('save','💾 Save room'),('forget','🗑 Reset saved')]:
+            style=discord.ButtonStyle.primary if action in ('rename','limit','info','save') else discord.ButtonStyle.danger if action in ('kick','forget') else discord.ButtonStyle.secondary
+            b=discord.ui.Button(label=label,custom_id='voice:'+action,style=style)
             async def action_handler(i,a=action):
                 try:
                     if a=='claim':
@@ -435,7 +439,24 @@ class VoicePanel(ErrorView):
                         await c.set_permissions(i.user,view_channel=True,connect=True)
                         bot.store.run('UPDATE rooms SET owner=? WHERE channel=?',(i.user.id,c.id))
                         await reply(i,'Daba nta owner ✅'); return
+                    if a=='forget':
+                        bot.store.clear_voice_preferences(i.guild_id,i.user.id)
+                        return await reply(i,'Saved room preferences cleared. Current room unchanged.')
+                    if a=='info':
+                        c=i.user.voice.channel if isinstance(i.user,discord.Member) and i.user.voice else None
+                        r=bot.store.one('SELECT * FROM rooms WHERE guild=? AND channel=?',(i.guild_id,c.id)) if c else None
+                        if not r: raise ValueError('Join a TOV4R temporary voice room first.')
+                        ow=c.overwrites_for(i.guild.default_role)
+                        e=embed('🔊 TOV4R • Room info',discord.utils.escape_markdown(c.name))
+                        e.add_field(name='Owner',value=f'<@{r["owner"]}>')
+                        e.add_field(name='Members',value=f'{len(c.members)} / {c.user_limit or "Unlimited"}')
+                        e.add_field(name='Access',value='Locked' if ow.connect is False else 'Open')
+                        e.add_field(name='Visibility',value='Hidden' if ow.view_channel is False else 'Visible')
+                        return await i.response.send_message(embed=e,ephemeral=True)
                     c,_=await owned_room(bot,i)
+                    if a=='save':
+                        bot.store.save_voice_preferences(i.guild_id,i.user.id,c.name,c.user_limit)
+                        return await reply(i,'Room name and member limit saved for your next room on this server. Permissions are not saved.')
                     if a in ('rename','limit'): await i.response.send_modal(RoomModal(bot,a)); return
                     if a in ('permit','kick','transfer'):
                         v=ErrorView(timeout=90); v.add_item(RoomUserSelect(bot,a))
@@ -448,7 +469,9 @@ class VoicePanel(ErrorView):
                     await reply(i,'Tgad ✅ Explicitly permitted members can still join locked rooms.')
                 except ValueError as e: await reply(i,str(e))
             async def callback(i,handler=action_handler):
-                channel=i.user.voice.channel if isinstance(i.user,discord.Member) and i.user.voice else None
+                if not i.guild or not isinstance(i.user,discord.Member):
+                    return await reply(i,'Use this panel in a server.')
+                channel=i.user.voice.channel if i.user.voice else None
                 async with bot.locks[('room',channel.id if channel else i.user.id)]:
                     await handler(i)
             b.callback=callback; self.add_item(b)
@@ -690,7 +713,14 @@ class Features(commands.Cog):
     @app_commands.choices(kind=[app_commands.Choice(name='Voice',value='voice'),app_commands.Choice(name='Tickets',value='tickets')])
     async def panels(self,i:discord.Interaction,kind:str):
         await i.response.defer(ephemeral=True)
-        await i.channel.send(embed=embed('TOV4R • '+kind,'Choose Support, Report or Partnership below.' if kind=='tickets' else 'Use the buttons below.'),view=VoicePanel(self.bot) if kind=='voice' else TicketPanel(self.bot))
+        if kind=='voice':
+            e=embed('🔊 TOV4R • Voice Control','Join the voice creator channel to create your own temporary room. Control it using the buttons below.')
+            e.add_field(name='🔐 Privacy',value='Lock / Unlock • Hide / Show',inline=False)
+            e.add_field(name='⚙️ Manage',value='Rename / Limit • Permit / Kick & block • Transfer / Claim',inline=False)
+            e.add_field(name='💾 Preferences',value='Save room remembers your name and limit. Reset saved clears those preferences. Room info shows your current room.',inline=False)
+            await i.channel.send(embed=e,view=VoicePanel(self.bot))
+        else:
+            await i.channel.send(embed=embed('TOV4R • tickets','Choose Support, Report or Partnership below.'),view=TicketPanel(self.bot))
         await reply(i,'Panel sent ✅')
     @app_commands.guild_only()
     @app_commands.command(description='Configure private support tickets and publish the ticket panel')

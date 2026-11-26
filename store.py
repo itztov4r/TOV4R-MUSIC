@@ -40,6 +40,7 @@ class Store:
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS config(guild INTEGER PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS rooms(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER);
+        CREATE TABLE IF NOT EXISTS voice_preferences(guild INTEGER NOT NULL,user INTEGER NOT NULL,name TEXT NOT NULL,user_limit INTEGER NOT NULL,PRIMARY KEY(guild,user));
         CREATE TABLE IF NOT EXISTS tickets(channel INTEGER PRIMARY KEY,guild INTEGER,owner INTEGER,closed INTEGER DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_ticket ON tickets(guild,owner) WHERE closed=0;
         CREATE TABLE IF NOT EXISTS ticket_details(channel INTEGER PRIMARY KEY,guild INTEGER NOT NULL,kind TEXT NOT NULL DEFAULT 'support',claimed_by INTEGER NOT NULL DEFAULT 0);
@@ -98,6 +99,16 @@ class Store:
         before = r['points'] if r else 0
         self.run('INSERT OR REPLACE INTO xp VALUES(?,?,?,?)',(guild,user,before+20,now))
         return level(before+20) if level(before+20)>level(before) else None
+    def voice_preferences(self,guild,user):
+        return self.one('SELECT name,user_limit FROM voice_preferences WHERE guild=? AND user=?',(guild,user))
+    def save_voice_preferences(self,guild,user,name,user_limit):
+        if not isinstance(name,str) or not name.strip() or len(name)>100:
+            raise ValueError('Room name must have 1–100 characters.')
+        if type(user_limit) is not int or not 0<=user_limit<=99:
+            raise ValueError('Member limit must be 0–99.')
+        self.run('INSERT INTO voice_preferences VALUES(?,?,?,?) ON CONFLICT(guild,user) DO UPDATE SET name=excluded.name,user_limit=excluded.user_limit',(guild,user,name.strip(),user_limit))
+    def clear_voice_preferences(self,guild,user):
+        self.run('DELETE FROM voice_preferences WHERE guild=? AND user=?',(guild,user))
     def count_message(self,guild,user):
         self.run('INSERT INTO activity(guild,user,messages) VALUES(?,?,1) ON CONFLICT(guild,user) DO UPDATE SET messages=messages+1',(guild,user))
     def award_voice(self,guild,user,seconds,now=None):
