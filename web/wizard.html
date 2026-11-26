@@ -17,7 +17,9 @@
     <nav aria-label="Navigation principale">
       <a href="#overview">◈ &nbsp; Overview</a>
       <a href="#builder">✦ &nbsp; Setup Wizard</a>
-      <a href="#preferences">⚙ &nbsp; Server Settings</a>
+      <a href="#preferences">⚙ &nbsp; XP & Security</a>
+      <a href="#modules">🎫 &nbsp; Voice & Tickets</a>
+      <a href="https://tov4r.xyz/bot/">↗ &nbsp; Bot website</a>
       <a href="#activity">◷ &nbsp; Activity</a>
     </nav>
     <div class="side-bottom">
@@ -27,7 +29,7 @@
   </aside>
   <main>
     <header class="topbar">
-      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V4</span></div></div>
+      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V7</span></div></div>
       <div class="user-slot"><span id="actor">Not signed in</span><button type="button" id="logout" class="quiet" hidden>Sign out</button></div>
     </header>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
@@ -83,12 +85,23 @@
             <label class="setting"><span><b>Anti-Spam</b><small>Automatic spam moderation</small></span><input type="checkbox" name="antispam"></label>
             <label class="setting"><span><b>Anti-Invites</b><small>Block public Discord invite links</small></span><input type="checkbox" name="anti_invites"></label>
             <label class="setting"><span><b>Levels & XP</b><small>Enable community progression</small></span><input type="checkbox" name="levels"></label>
+            <label class="setting"><span><b>Voice XP</b><small>Opt-in voice-state activity; no audio recording</small></span><input type="checkbox" name="voice_xp"></label>
+            <label class="setting"><span><b>Security monitoring</b><small>Raid and unusual activity alerts; no automatic bans</small></span><input type="checkbox" name="security_enabled"></label>
             <label class="setting"><span><b>XP cooldown</b><small>Seconds between XP awards (15–3600)</small></span><input name="xp_cooldown" type="number" min="15" max="3600" required></label>
           </div>
           <label class="line-field">Welcome message <small>Use {mention}, {name} or {server}</small><textarea rows="2" maxlength="1500" name="welcome_text"></textarea></label>
           <label class="line-field">Filtered words <small>Comma-separated</small><textarea rows="2" maxlength="1500" name="blocked_words"></textarea></label>
           <div class="wizard-actions"><button class="action" type="submit" id="save-settings">Save server settings ↗</button></div>
         </form>
+      </section>
+      <section id="modules" class="panel">
+        <div class="head"><div><span class="eyebrow">04 / COMMUNITY MODULES</span><h2>Voice & Tickets</h2><p>Manage your existing modules in Discord. These controls are guides, not web actions.</p></div></div>
+        <div class="settings-grid">
+          <div class="setting"><span><b>Voice panel</b><small>Publish with /panels kind:Voice. Members can save room preferences.</small></span></div>
+          <div class="setting"><span><b>Ticket panel</b><small>Use /ticket_setup or /panels kind:Tickets. Closed tickets are deleted after 10 seconds, subject to transcript saving.</small></span></div>
+          <div class="setting"><span><b>Private security alerts</b><small>Use /security_setup with a staff-only alerts channel. View Audit Log is needed for destructive-activity alerts.</small></span></div>
+          <div class="setting"><span><b>Community profiles</b><small>/profile, /leaderboard and /voice_top show your server's progression.</small></span></div>
+        </div>
       </section>
       <section id="activity" class="two-cols">
         <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><div id="events" class="feed"></div></div>

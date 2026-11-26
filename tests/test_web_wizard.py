@@ -132,6 +132,19 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
             await self.service.login(FakeRequest())
         self.assertEqual(self.service._principal(self.owner())["actor"], "owner")
 
+    async def test_v7_module_settings_are_guild_scoped(self):
+        self.bot.voice_previous = {(self.guild.id, 1, 2), (99, 1, 2)}
+        response = await self.service.settings(self.owner(self.guild.id, {"voice_xp": True, "security_enabled": True}))
+        self.assertTrue(json.loads(response.text)["ok"])
+        self.assertTrue(self.store.config(self.guild.id)["voice_xp"])
+        self.assertTrue(self.store.config(self.guild.id)["security_enabled"])
+        self.assertFalse(self.store.config(99)["voice_xp"])
+        self.assertEqual(self.bot.voice_previous, {(99, 1, 2)})
+        with self.assertRaises(web.HTTPBadRequest):
+            await self.service.settings(self.owner(self.guild.id, {"voice_xp": "yes"}))
+        with self.assertRaises(web.HTTPForbidden):
+            await self.service.settings(self.owner(99, {"security_enabled": True}))
+
     async def test_preview_requires_valid_type_and_creates_no_discord_resources(self):
         req = self.owner(self.guild.id, {"theme": "movies", "focus": False})
         with self.assertRaises(web.HTTPBadRequest):

@@ -32,11 +32,12 @@ from store import validate_config
 LOG = logging.getLogger("tov4r.dashboard")
 API = "https://discord.com/api/v10"
 MANAGE_GUILD = 1 << 5
+ADMINISTRATOR = 1 << 3
 SESSION_SECONDS = 3600
 STATE_SECONDS = 600
 PLAN_SECONDS = 600
 SAFE_CONFIG = frozenset({
-    "levels", "antispam", "anti_invites",
+    "levels", "antispam", "anti_invites", "voice_xp", "security_enabled",
     "welcome_text", "blocked_words", "xp_cooldown",
 })
 
@@ -213,8 +214,8 @@ class DashboardV2:
         for item in guilds:
             try:
                 allowed = bool(item.get("owner")) or (
-                    int(item.get("permissions", "0")) & MANAGE_GUILD
-                ) == MANAGE_GUILD
+                    int(item.get("permissions", "0")) & (MANAGE_GUILD | ADMINISTRATOR)
+                ) != 0
                 if allowed:
                     guild = self.bot.get_guild(int(item["id"]))
                     if guild is not None:
@@ -417,8 +418,18 @@ class DashboardV2:
         data = await self._json(request)
         if not data or set(data) - SAFE_CONFIG:
             raise web.HTTPBadRequest(text="Unsupported or empty settings change")
-        changes = validate_config(data)
+        try:
+            changes = validate_config(data)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        old = self.bot.store.config(guild.id)
         self.bot.store.update(guild.id, changes)
+        if any(key in changes and old[key] != changes[key] for key in ("levels", "voice_xp")):
+            if hasattr(self.bot, "voice_previous"):
+                self.bot.voice_previous = {k for k in self.bot.voice_previous if k[0] != guild.id}
+        if "security_enabled" in changes and old["security_enabled"] != changes["security_enabled"]:
+            if hasattr(self.bot, "security"):
+                self.bot.security.clear(guild.id)
         await self.bot.audit(
             guild, "Web settings", "Updated: " + ", ".join(changes) +
             " by Discord user " + principal["actor"]
