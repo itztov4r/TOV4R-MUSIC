@@ -184,5 +184,21 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         channel.connect.assert_awaited_once_with(timeout=15, reconnect=True, self_deaf=True)
 
 
+    async def test_offline_audio_is_cached_without_provider(self):
+        from voice_welcome import VoiceWelcome
+        from pathlib import Path
+        from unittest.mock import patch
+        import tempfile
+        cog = VoiceWelcome(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            (base / "welcome-offline.mp3").write_bytes(b"test bundled clip")
+            cog.audio = base / "data" / "welcome.mp3"
+            with patch("voice_welcome.__file__", str(base / "voice_welcome.py")), patch("voice_welcome.aiohttp.ClientSession") as session:
+                await cog.prepare()
+                self.assertEqual(cog.audio.read_bytes(), b"test bundled clip")
+                session.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
