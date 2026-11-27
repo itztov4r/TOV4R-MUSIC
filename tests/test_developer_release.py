@@ -154,5 +154,35 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
                 session.assert_not_called()
 
 
+    async def test_persistent_connection_reused_after_greeting(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cog = VoiceWelcome(SimpleNamespace())
+        channel = Mock()
+        channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
+        client = Mock()
+        client.is_connected.return_value = True
+        client.channel = channel
+        client.disconnect = AsyncMock()
+        guild = SimpleNamespace(id=123, me=object(), voice_client=client)
+        cog.clients[guild.id] = client
+        self.assertIs(await cog.ensure_connection(guild, channel), client)
+        client.disconnect.assert_not_awaited()
+
+    async def test_empty_voice_room_connects_and_stays(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cog = VoiceWelcome(SimpleNamespace())
+        channel = Mock()
+        channel.members = []
+        channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
+        client = Mock()
+        channel.connect = AsyncMock(return_value=client)
+        guild = SimpleNamespace(id=123, me=object(), voice_client=None)
+        self.assertIs(await cog.ensure_connection(guild, channel), client)
+        self.assertIs(cog.clients[guild.id], client)
+        channel.connect.assert_awaited_once_with(timeout=15, reconnect=True, self_deaf=True)
+
+
 if __name__ == "__main__":
     unittest.main()
