@@ -102,6 +102,46 @@ class ModuleReleaseTests(unittest.IsolatedAsyncioTestCase):
         i.user.id = 789
         self.assertFalse(cog.authorized(i))
 
+    async def test_public_ai_requires_opt_in_and_never_executes_actions(self):
+        from ai_agent import AIAgent
+        cfg = {"ai_enabled": False}
+        cog = AIAgent(SimpleNamespace(store=SimpleNamespace(config=lambda _: cfg)))
+        cog.key = "test-not-a-real-key"
+        cog.all_guilds = True
+        cog.answer = AsyncMock(return_value="@everyone Example answer")
+        cog.plan = AsyncMock()
+        i = SimpleNamespace(
+            guild=SimpleNamespace(id=123, owner_id=456),
+            user=SimpleNamespace(id=789),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()))
+        await cog.ask.callback(cog, i, "hello")
+        cog.answer.assert_not_awaited()
+        cfg["ai_enabled"] = True
+        self.assertTrue(cog.chat_authorized(i))
+        self.assertFalse(cog.authorized(i))
+        await cog.ask.callback(cog, i, "create a role")
+        cog.answer.assert_awaited_once_with("create a role")
+        cog.plan.assert_not_awaited()
+        i.followup.send.assert_awaited_once()
+        self.assertTrue(i.followup.send.await_args.kwargs["ephemeral"])
+        self.assertFalse(i.followup.send.await_args.kwargs["allowed_mentions"].everyone)
+
+    async def test_public_ai_quota_preserves_admin_capacity(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace())
+        i = SimpleNamespace(user=SimpleNamespace(id=10))
+        for n in range(3):
+            self.assertTrue(cog.reserve_chat(i, 1000 + n * 11))
+        self.assertFalse(cog.reserve_chat(i, 1044))
+        for n in range(17):
+            i.user.id = n + 20
+            self.assertTrue(cog.reserve_chat(i, 1100 + n * 11))
+        i.user.id = 99
+        self.assertFalse(cog.reserve_chat(i, 1500))
+        self.assertEqual(len(cog.quota), 20)
+        self.assertTrue(cog.reserve_chat(i, 90000))
+
     async def test_dashboard_rejects_nonowner_ai_write(self):
         from aiohttp import web
         from web_dashboard_v2 import DashboardV2
