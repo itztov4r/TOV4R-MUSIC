@@ -86,6 +86,8 @@ class Community(commands.Bot):
         await self.add_cog(AutoModCommands(self))
         from developer_edition import DeveloperEdition
         await self.add_cog(DeveloperEdition(self))
+        from ai_agent import AIAgent
+        await self.add_cog(AIAgent(self))
         from community_social import CommunitySocial, SocialView
         await self.add_cog(CommunitySocial(self))
         for r in self.store.all("SELECT * FROM community_posts WHERE closed=0"):
@@ -224,6 +226,8 @@ class Community(commands.Bot):
             # Do not include private support conversations in activity counters.
             if not self.store.one('SELECT channel FROM tickets WHERE guild=? AND channel=?',(message.guild.id,message.channel.id)):
                 self.store.count_message(message.guild.id,message.author.id)
+            else:
+                return  # Private ticket messages do not earn public XP either.
             up=self.store.award(message.guild.id,message.author.id,cfg['xp_cooldown'])
             await grant_rewards(self,message.author)
             if up is not None:
@@ -254,7 +258,7 @@ class Community(commands.Bot):
             self.voice_previous={k for k in self.voice_previous if not (k[0]==member.guild.id and k[2] in channels)}
         if before.channel == after.channel: return
         cfg=self.store.config(member.guild.id)
-        if after.channel and after.channel.id==cfg['voice_creator']:
+        if cfg['voice_rooms_enabled'] and after.channel and after.channel.id==cfg['voice_creator']:
             async with self.locks[('voice',member.id)]:
                 if not member.voice or member.voice.channel.id!=cfg['voice_creator']: return
                 existing=self.store.one('SELECT channel FROM rooms WHERE guild=? AND owner=?',(member.guild.id,member.id))
@@ -285,8 +289,9 @@ class Community(commands.Bot):
                             panel.add_field(name='🔒 Access',value='Lock / Unlock • Hide / Show',inline=False)
                             panel.add_field(name='⚙️ Room settings',value='Rename • Limit • Permit • Transfer • Claim',inline=False)
                             panel.add_field(name='💾 Preferences',value='Room info • Save room • Reset saved',inline=False)
-                            await channel.send(embed=panel,view=VoicePanel(self,member.guild.id),
-                                               allowed_mentions=discord.AllowedMentions.none())
+                            if cfg['voice_panel_enabled']:
+                                await channel.send(embed=panel,view=VoicePanel(self,member.guild.id),
+                                                   allowed_mentions=discord.AllowedMentions.none())
                         except discord.HTTPException:
                             log.warning('Voice room %s created, but its chat panel could not be delivered',channel.id,exc_info=True)
                         await self.audit(member.guild,'Voice created',f'{channel.name} • Owner {member.id}')
@@ -571,6 +576,7 @@ class TicketPanel(ErrorView):
             existing=self.bot.store.one('SELECT * FROM tickets WHERE guild=? AND owner=? AND closed=0',(i.guild_id,i.user.id))
             if existing and i.guild.get_channel(existing['channel']): return await reply(i,tr(self.bot,i.guild_id,'ticket_exists',channel=f'<#{existing["channel"]}>'))
             if existing: self.bot.store.run('UPDATE tickets SET closed=1 WHERE channel=?',(existing['channel'],))
+            if not cfg['tickets_enabled']: return await reply(i,'New tickets are disabled by server management.')
             cat=i.guild.get_channel(cfg['ticket_category']); role=i.guild.get_role(cfg['support_role'])
             if not isinstance(cat,discord.CategoryChannel) or not role or role.is_default() or role.managed: return await reply(i,tr(self.bot,i.guild_id,'ticket_missing'))
             overwrites={i.guild.default_role:discord.PermissionOverwrite(view_channel=False),
