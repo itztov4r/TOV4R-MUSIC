@@ -10,6 +10,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from localization import interaction_text
 
 LOG = logging.getLogger("tov4r.voice_welcome")
 GREETING = "مرحبا بيك ف سيرفر توفار! أنا البوت ديال السيرفر، وهاد الصوت مولد بالذكاء الاصطناعي. نتمنى ليك وقت زوين."
@@ -129,11 +130,11 @@ class VoiceWelcome(commands.Cog):
     @app_commands.guild_only()
     async def upload_audio(self, i: discord.Interaction, file: discord.Attachment):
         if not can_manage_voice_welcome(i):
-            return await i.response.send_message('Server owner or Administrator only.', ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_owner'), ephemeral=True)
         formats = {'.mp3': 'mp3', '.wav': 'wav', '.ogg': 'ogg', '.m4a': 'mov'}
         fmt = formats.get(Path(file.filename).suffix.lower())
         if not fmt or not 0 < file.size <= MAX_AUDIO:
-            return await i.response.send_message('Upload MP3, WAV, OGG or M4A, up to 64 MB (subject to Discord upload limits; first 5 minutes). Use only audio you have permission to play.', ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_format'), ephemeral=True)
         await i.response.defer(ephemeral=True, thinking=True)
         target = self.custom_audio(i.guild_id)
         try:
@@ -149,51 +150,51 @@ class VoiceWelcome(commands.Cog):
                     await self.convert_audio(source, output, fmt)
                     output.replace(target)
         except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError, aiohttp.ClientError):
-            return await i.followup.send('Invalid audio or conversion failed. Existing greeting unchanged.', ephemeral=True)
-        await i.followup.send('Custom welcome saved for this server. Audio is normalized and converted to Opus (first 5 minutes). Existing voice room settings are unchanged.', ephemeral=True)
+            return await i.followup.send(interaction_text(self.bot, i, 'vw_failed'), ephemeral=True)
+        await i.followup.send(interaction_text(self.bot, i, 'vw_saved'), ephemeral=True)
 
     @welcome.command(name='reset_audio', description='Remove custom recording and return to the default voice')
     @app_commands.guild_only()
     async def reset_audio(self, i: discord.Interaction):
         if not can_manage_voice_welcome(i):
-            return await i.response.send_message('Server owner or Administrator only.', ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_owner'), ephemeral=True)
         self.custom_audio(i.guild_id).unlink(missing_ok=True)
-        await i.response.send_message('Default greeting restored.', ephemeral=True)
+        await i.response.send_message(interaction_text(self.bot, i, 'vw_reset'), ephemeral=True)
 
     @welcome.command(name="setup", description="Enable free offline greeting in one voice room")
     @app_commands.guild_only()
     @app_commands.describe(channel="Voice channel to greet in", confirm="Confirm automatic playback in this room")
     async def setup(self, i: discord.Interaction, channel: discord.VoiceChannel, confirm: bool = False):
         if not can_manage_voice_welcome(i):
-            return await i.response.send_message("Server owner or Administrator only.", ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_owner'), ephemeral=True)
         if channel.id == self.bot.store.config(i.guild_id)["voice_creator"]:
-            return await i.response.send_message("Choose a normal voice room, not the TAB creator.", ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_room'), ephemeral=True)
         me = i.guild.me
         perms = channel.permissions_for(me) if me else None
         if not perms or not all((perms.view_channel, perms.connect, perms.speak)):
-            return await i.response.send_message("Bot needs View Channel, Connect and Speak in that room.", ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_permissions'), ephemeral=True)
         if not confirm:
-            return await i.response.send_message("Preview: the bot stays in this voice room even when empty and plays a fixed locally synthesized Arabic greeting on entry. No member audio is recorded and no speech API is required. Run again with confirm=True to enable.", ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_preview'), ephemeral=True)
         await i.response.defer(ephemeral=True, thinking=True)
         try:
             await self.prepare()
         except (ValueError, OSError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
             LOG.warning("Voice welcome preparation failed: %s", type(exc).__name__)
-            return await i.followup.send(str(exc) if isinstance(exc, ValueError) else "Voice generation failed; existing settings unchanged.", ephemeral=True)
+            return await i.followup.send(interaction_text(self.bot, i, 'vw_prepare'), ephemeral=True)
         async with self.bot.locks[('voice_welcome', i.guild_id)]:
             self.bot.store.update(i.guild_id, {'voice_welcome_channel': channel.id})
             try:
                 client = await self.ensure_connection(i.guild, channel)
             except (discord.DiscordException, asyncio.TimeoutError, OSError, RuntimeError):
                 client = None
-        status = 'Connected; the bot stays in the room even when empty.' if client else 'Saved, but not connected yet. Check voice permissions or another active voice connection.'
-        await i.followup.send(f'Voice welcome enabled in {channel.mention}. {status} Playback only; no recording.', ephemeral=True)
+        status = interaction_text(self.bot, i, 'vw_connected') if client else interaction_text(self.bot, i, 'vw_pending')
+        await i.followup.send(interaction_text(self.bot, i, 'vw_enabled', channel=channel.mention, status=status), ephemeral=True)
 
     @welcome.command(name="off", description="Disable automatic voice greeting")
     @app_commands.guild_only()
     async def off(self, i: discord.Interaction):
         if not can_manage_voice_welcome(i):
-            return await i.response.send_message("Server owner or Administrator only.", ephemeral=True)
+            return await i.response.send_message(interaction_text(self.bot, i, 'vw_owner'), ephemeral=True)
         await i.response.defer(ephemeral=True)
         # Disable immediately and interrupt only our own playback before waiting on its lock.
         self.bot.store.update(i.guild_id, {'voice_welcome_channel': 0})
@@ -207,8 +208,8 @@ class VoiceWelcome(commands.Cog):
                 try:
                     await client.disconnect(force=True)
                 except (discord.DiscordException, OSError, RuntimeError):
-                    return await i.followup.send('Disabled; voice disconnect could not be verified.', ephemeral=True)
-        await i.followup.send('Voice welcome disabled.', ephemeral=True)
+                    return await i.followup.send(interaction_text(self.bot, i, 'vw_disconnect'), ephemeral=True)
+        await i.followup.send(interaction_text(self.bot, i, 'vw_off'), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
