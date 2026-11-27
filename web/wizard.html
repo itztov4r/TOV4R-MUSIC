@@ -71,6 +71,13 @@
           <div class="setting"><span><b>Custom welcome</b><small>MP3, WAV, OGG, M4A · first 5 minutes · up to 64 MB, subject to Discord limits.</small></span></div>
         </div>
         <p class="hint" id="voice-access">—</p>
+        <form id="voice-upload-form">
+          <label class="line-field" for="voice-file">New welcome recording (64 MB max)</label>
+          <input id="voice-file" type="file" accept=".mp3,.wav,.ogg,.m4a" required>
+          <label class="line-field"><input id="voice-consent" type="checkbox" required> I have permission to play this audio in my server.</label>
+          <div class="wizard-actions"><button class="action" id="voice-upload" type="submit">Upload recording</button><button class="quiet" id="voice-reset" type="button">Restore default recording</button></div>
+          <p class="hint">The first five minutes are converted to Opus. Uploading does not enable or move the bot. Use the commands below to select or stop the voice room.</p>
+        </form>
         <div class="quick-commands" aria-label="Voice Welcome commands">
           <button type="button" class="quiet" data-copy="/voicewelcome setup">Copy setup command</button>
           <button type="button" class="quiet" data-copy="/voicewelcome audio">Copy upload command</button>
