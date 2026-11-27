@@ -377,5 +377,60 @@ class DashboardV3Tests(unittest.TestCase):
         self.assertFalse(DashboardV2.voice_status(guild, {"voice_welcome_channel": 789}, True)["channel_available"])
 
 
+class AIContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opt_in_memory_isolated_reset_and_default_stateless(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace(store=SimpleNamespace(config=lambda _: {"ai_enabled": True})))
+        cog.key = "test-not-a-real-key"
+        cog.all_guilds = True
+        cog.reserve_chat = lambda *args: True
+        cog.answer = AsyncMock(return_value="Example answer")
+        def member(guild, user):
+            return SimpleNamespace(guild=SimpleNamespace(id=guild, owner_id=99),
+                user=SimpleNamespace(id=user),
+                response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+                followup=SimpleNamespace(send=AsyncMock()))
+        a, b, c = member(1, 2), member(1, 3), member(4, 2)
+        try:
+            await cog.ask.callback(cog, a, "First", True)
+            self.assertIn((1, 2), cog.memory)
+            await cog.ask.callback(cog, b, "Other member", True)
+            cog.answer.assert_awaited_with("Other member")
+            await cog.ask.callback(cog, c, "Other server", True)
+            cog.answer.assert_awaited_with("Other server")
+            await cog.ask.callback(cog, a, "Follow-up", True)
+            cog.answer.assert_awaited_with("Follow-up", ("First", "Example answer"))
+            await cog.ai_clear.callback(cog, a)
+            self.assertNotIn((1, 2), cog.memory)
+            self.assertIn((1, 3), cog.memory)
+            await cog.ask.callback(cog, b, "Stateless")
+            cog.answer.assert_awaited_with("Stateless")
+            self.assertNotIn((1, 3), cog.memory)
+        finally:
+            await cog.cog_unload()
+        self.assertFalse(cog.memory)
+
+    async def test_reset_during_pending_request_prevents_repopulation(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace())
+        key, token = (1, 2), object()
+        cog.pending_memory[key] = token
+        cog.clear_memory(key)
+        cog.remember_exchange(key, token, "Question", "Answer")
+        self.assertNotIn(key, cog.memory)
+
+    async def test_provider_input_only_includes_opted_in_exchange(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace())
+        cog.response_text = AsyncMock(return_value="Answer")
+        await cog.answer("Question")
+        self.assertEqual(cog.response_text.await_args.args[0]["input"], "Question")
+        await cog.answer("Follow-up", ("Previous", "Reply"))
+        payload = cog.response_text.await_args.args[0]
+        self.assertFalse(payload["store"])
+        self.assertEqual([x["role"] for x in payload["input"]], ["user", "assistant", "user"])
+        self.assertEqual(payload["input"][-1]["content"], "Follow-up")
+
+
 if __name__ == "__main__":
     unittest.main()
