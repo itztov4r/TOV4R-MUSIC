@@ -8,7 +8,7 @@ import time
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 LOG = logging.getLogger("tov4r.voice_welcome")
 GREETING = "مرحبا بيك ف سيرفر توفار! أنا البوت ديال السيرفر، وهاد الصوت مولد بالذكاء الاصطناعي. نتمنى ليك وقت زوين."
@@ -29,6 +29,56 @@ class VoiceWelcome(commands.Cog):
         self.audio = Path(os.getenv("DATABASE_PATH", "data/community.db")).resolve().parent / "welcome-darija-v1.mp3"
         self.audio_lock = asyncio.Lock()
         self.last = {}
+        self.clients = {}  # Only connections created by this module.
+
+    async def cog_load(self):
+        self.keep_connected.start()
+
+    async def cog_unload(self):
+        self.keep_connected.cancel()
+
+    async def ensure_connection(self, guild, channel):
+        me = guild.me
+        perms = channel.permissions_for(me) if me else None
+        if not perms or not all((perms.view_channel, perms.connect, perms.speak)):
+            return None
+        client = guild.voice_client
+        if client is not None:
+            if self.clients.get(guild.id) is not client:
+                return None  # Never move or interrupt another voice feature.
+            if client.is_connected() and client.channel == channel:
+                return client
+            await client.disconnect(force=True)
+            self.clients.pop(guild.id, None)
+        client = await channel.connect(timeout=15, reconnect=True, self_deaf=True)
+        self.clients[guild.id] = client
+        return client
+
+    @tasks.loop(seconds=30)
+    async def keep_connected(self):
+        if not self.audio.is_file():
+            return
+        for guild in list(self.bot.guilds):
+            channel_id = self.bot.store.config(guild.id)['voice_welcome_channel']
+            if not channel_id or guild.unavailable:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.VoiceChannel):
+                continue
+            lock = self.bot.locks[('voice_welcome', guild.id)]
+            if lock.locked():
+                continue
+            async with lock:
+                if self.bot.store.config(guild.id)['voice_welcome_channel'] != channel.id:
+                    continue
+                try:
+                    await self.ensure_connection(guild, channel)
+                except (discord.DiscordException, asyncio.TimeoutError, OSError, RuntimeError):
+                    LOG.warning('Voice welcome connection unavailable guild=%s', guild.id)
+
+    @keep_connected.before_loop
+    async def before_keep_connected(self):
+        await self.bot.wait_until_ready()
 
     async def prepare(self):
         async with self.audio_lock:
@@ -72,23 +122,37 @@ class VoiceWelcome(commands.Cog):
         if not perms or not all((perms.view_channel, perms.connect, perms.speak)):
             return await i.response.send_message("Bot needs View Channel, Connect and Speak in that room.", ephemeral=True)
         if not confirm:
-            return await i.response.send_message("Preview: a fixed Darija AI-generated greeting plays on entry. No member audio or names are sent to the provider. First generation may incur a small API charge. Run again with confirm=True to enable.", ephemeral=True)
+            return await i.response.send_message("Preview: the bot stays in this voice room even when empty and plays a fixed Darija AI-generated greeting on entry. No member audio or names are sent to the provider. First generation may incur a small API charge. Run again with confirm=True to enable.", ephemeral=True)
         await i.response.defer(ephemeral=True, thinking=True)
         try:
             await self.prepare()
         except (ValueError, OSError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
             LOG.warning("Voice welcome preparation failed: %s", type(exc).__name__)
             return await i.followup.send(str(exc) if isinstance(exc, ValueError) else "Voice generation failed; existing settings unchanged.", ephemeral=True)
-        self.bot.store.update(i.guild_id, {"voice_welcome_channel": channel.id})
-        await i.followup.send(f"AI-generated Darija greeting enabled in {channel.mention}. Playback only; no recording.", ephemeral=True)
+        async with self.bot.locks[('voice_welcome', i.guild_id)]:
+            self.bot.store.update(i.guild_id, {'voice_welcome_channel': channel.id})
+            try:
+                client = await self.ensure_connection(i.guild, channel)
+            except (discord.DiscordException, asyncio.TimeoutError, OSError, RuntimeError):
+                client = None
+        status = 'Connected; the bot stays in the room even when empty.' if client else 'Saved, but not connected yet. Check voice permissions or another active voice connection.'
+        await i.followup.send(f'Voice welcome enabled in {channel.mention}. {status} Playback only; no recording.', ephemeral=True)
 
     @welcome.command(name="off", description="Disable automatic voice greeting")
     @app_commands.guild_only()
     async def off(self, i: discord.Interaction):
         if i.user.id != i.guild.owner_id:
             return await i.response.send_message("Server owner only.", ephemeral=True)
-        self.bot.store.update(i.guild_id, {"voice_welcome_channel": 0})
-        await i.response.send_message("Voice welcome disabled.", ephemeral=True)
+        await i.response.defer(ephemeral=True)
+        async with self.bot.locks[('voice_welcome', i.guild_id)]:
+            self.bot.store.update(i.guild_id, {'voice_welcome_channel': 0})
+            client = self.clients.pop(i.guild_id, None)
+            if client is not None and i.guild.voice_client is client:
+                try:
+                    await client.disconnect(force=True)
+                except (discord.DiscordException, OSError, RuntimeError):
+                    return await i.followup.send('Disabled; voice disconnect could not be verified.', ephemeral=True)
+        await i.followup.send('Voice welcome disabled.', ephemeral=True)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -99,19 +163,20 @@ class VoiceWelcome(commands.Cog):
             return
         guild, channel = member.guild, after.channel
         lock = self.bot.locks[("voice_welcome", guild.id)]
-        # Avoid queueing bursts, interrupting another voice feature, or joining an empty room.
+        # Avoid overlapping greetings or interrupting another voice feature.
         if lock.locked() or time.monotonic() - self.last.get(guild.id, float("-inf")) < 8:
             return
         async with lock:
-            if guild.voice_client or not member.voice or member.voice.channel != channel:
+            if not member.voice or member.voice.channel != channel:
                 return
             if self.bot.store.config(guild.id)["voice_welcome_channel"] != channel.id:
                 return
             self.last[guild.id] = time.monotonic()
             client = None
+            started_playback = False
             try:
-                client = await channel.connect(timeout=15, reconnect=False, self_deaf=True)
-                if not any(not m.bot for m in channel.members):
+                client = await self.ensure_connection(guild, channel)
+                if client is None or client.is_playing() or not any(not m.bot for m in channel.members):
                     return
                 done = asyncio.Event()
                 loop = asyncio.get_running_loop()
@@ -122,6 +187,7 @@ class VoiceWelcome(commands.Cog):
                 source = discord.FFmpegPCMAudio(str(self.audio), options="-vn")
                 try:
                     client.play(source, after=finished)
+                    started_playback = True
                 except Exception:
                     source.cleanup()
                     raise
@@ -129,8 +195,6 @@ class VoiceWelcome(commands.Cog):
             except (discord.DiscordException, asyncio.TimeoutError, OSError, RuntimeError) as exc:
                 LOG.warning("Voice welcome failed guild=%s: %s", guild.id, type(exc).__name__)
             finally:
-                if client is not None:
-                    try:
-                        await client.disconnect(force=True)
-                    except discord.DiscordException:
-                        LOG.warning("Voice welcome disconnect failed guild=%s", guild.id)
+                if started_playback and client is not None and client.is_playing():
+                    client.stop()
+                # Stay connected after playback, including when the room is empty.
