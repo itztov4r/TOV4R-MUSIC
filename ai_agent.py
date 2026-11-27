@@ -198,7 +198,7 @@ class AIAgent(commands.Cog):
                 "English or another language), clearly and concisely. You have no access to "
                 "server settings, messages, member data, tools, files or secrets. Never claim to "
                 "perform server actions. Do not solicit personal information. Do not provide "
-                "explicit sexual content, self-harm instructions, dangerous activities, violence "
+                "explicit sexual content, self-harm depictions or instructions, dangerous activities, violence "
                 "instructions, harassment, credential theft or abuse. Give safe alternatives. "
                 "Do not impersonate humans or provide immersive romantic roleplay. For server "
                 "changes refer the user to the authorized owner and /ai_admin. "
@@ -238,7 +238,7 @@ class AIAgent(commands.Cog):
             result = await self.answer(question, previous[:2]) if remember and previous else await self.answer(question)
             if not self.chat_authorized(interaction):
                 raise ValueError("Authorization changed")
-            notice = "\\n\\nContext: last exchange in RAM for 10 min. /ai_clear removes it." if remember else ""
+            notice = "\n\nContext: last exchange in RAM for 10 min. /ai_clear removes it." if remember and self.pending_memory.get(key) is token else ""
             await interaction.followup.send(result[:1600] + notice, ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
             if remember:
