@@ -20,6 +20,7 @@
       <a href="#preferences">⚙ &nbsp; XP & Security</a>
       <a href="#modules">🎫 &nbsp; Module Manager</a>
       <a href="/status">↗ &nbsp; Public status &amp; guide</a>
+      <a href="#voice-status">♫ &nbsp; Voice Welcome</a>
       <a href="#activity">◷ &nbsp; Activity</a>
     </nav>
     <div class="side-bottom">
@@ -29,7 +30,7 @@
   </aside>
   <main>
     <header class="topbar">
-      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V5.0 RC</span></div></div>
+      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V3 BETA</span></div></div>
       <div class="user-slot"><span id="actor">Not signed in</span><button type="button" id="logout" class="quiet" hidden>Sign out</button></div>
     </header>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
@@ -61,7 +62,21 @@
           <div class="online"><span class="dot"></span>LIVE DISCORD STATE</div>
         </div>
       </section>
+      <div class="overview-tools"><span id="last-refresh" class="hint">Not refreshed yet</span><button type="button" class="quiet" id="refresh-dashboard">Refresh data ↻</button></div>
       <div class="stats" id="stats"></div>
+      <section id="voice-status" class="panel">
+        <div class="head"><div><span class="eyebrow">LIVE MODULE STATUS</span><h2>Voice Welcome</h2><p>Playback only. No member audio is recorded.</p></div><span class="step" id="voice-connection">—</span></div>
+        <div class="settings-grid">
+          <div class="setting"><span><b>Selected room</b><small id="voice-room">—</small></span></div>
+          <div class="setting"><span><b>Custom welcome</b><small>MP3, WAV, OGG, M4A · first 5 minutes · up to 64 MB, subject to Discord limits.</small></span></div>
+        </div>
+        <p class="hint" id="voice-access">—</p>
+        <div class="quick-commands" aria-label="Voice Welcome commands">
+          <button type="button" class="quiet" data-copy="/voicewelcome setup">Copy setup command</button>
+          <button type="button" class="quiet" data-copy="/voicewelcome audio">Copy upload command</button>
+          <button type="button" class="quiet" data-copy="/voicewelcome off">Copy stop command</button>
+        </div>
+      </section>
       <section id="builder" class="panel builder">
         <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Preview missing staff roles, level rewards and essential bot channels. Nothing changes until you approve.</p></div><span class="step">PREVIEW → APPLY</span></div>
         <div id="themes" class="themes" role="group" aria-label="Server types"></div>
@@ -105,7 +120,7 @@
             <label class="setting"><span><b>Temporary TAB creation</b><small>Allow members to create new rooms</small></span><input type="checkbox" name="voice_rooms_enabled"></label>
             <label class="setting"><span><b>Automatic TAB panel</b><small>Post controls in the chat of each new room</small></span><input type="checkbox" name="voice_panel_enabled"></label>
             <label class="setting"><span><b>New support tickets</b><small>Existing tickets remain accessible</small></span><input type="checkbox" name="tickets_enabled"></label>
-            <label class="setting"><span><b>AI administration</b><small>Server-owner only, explicit requests sent to OpenAI. Requires provider configuration.</small></span><input type="checkbox" name="ai_enabled"></label>
+            <label class="setting"><span><b>AI assistant</b><small>Member questions via /ai; owner-only changes via /ai_admin. Requests go to OpenAI.</small></span><input type="checkbox" name="ai_enabled"></label>
           </div>
           <div class="wizard-actions"><button class="action" type="submit" id="save-modules">Save modules ↗</button></div><p class="hint">Only the server owner can change AI access. Turning modules off does not delete data.</p>
         </form>
@@ -117,7 +132,7 @@
         </div>
       </section>
       <section id="activity" class="two-cols">
-        <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><div id="events" class="feed"></div></div>
+        <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><label class="line-field" for="activity-filter">Filter recent activity</label><input id="activity-filter" type="search" placeholder="Search last 12 events"><div id="events" class="feed"></div></div>
         <div class="panel"><div class="head"><div><span class="eyebrow">05 / UNDO</span><h2>Restore layout</h2></div></div><p>Focused setup keeps an archive of unrelated channels. Reopen the archived layout at any time.</p><button class="quiet" id="restore" type="button">Restore archived channels ↶</button><p class="hint">Server owner or Administrator only. Restores previously archived channels. No bulk deletion.</p></div>
       </section>
     </div>
