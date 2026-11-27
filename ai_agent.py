@@ -12,6 +12,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+from localization import interaction_text
 
 LOG = logging.getLogger("tov4r.ai")
 ACTIONS = ("audit", "create_channel", "create_role", "clarify")
@@ -218,17 +219,17 @@ class AIAgent(commands.Cog):
     async def ask(self, interaction: discord.Interaction, request: str, remember: bool = False):
         if not self.chat_authorized(interaction):
             return await interaction.response.send_message(
-                "AI غير متاح هنا. خاص Owner يفعّل الميزة ويكون API خدام.", ephemeral=True)
+                interaction_text(self.bot, interaction, 'ai_unavailable'), ephemeral=True)
         key = self.memory_key(interaction)
         if not remember:
             self.clear_memory(key)
         question = request.strip()
         if not 1 <= len(question) <= 500:
-            return await interaction.response.send_message("كتب سؤال واضح (500 حرف كحد أقصى).", ephemeral=True)
+            return await interaction.response.send_message(interaction_text(self.bot, interaction, 'ai_question'), ephemeral=True)
         if not self.reserve_chat(interaction, time.monotonic()):
-            return await interaction.response.send_message("AI: limite de requêtes atteinte. Réessaie plus tard.", ephemeral=True)
+            return await interaction.response.send_message(interaction_text(self.bot, interaction, 'ai_quota'), ephemeral=True)
         if remember and key in self.pending_memory:
-            return await interaction.response.send_message("Previous question still processing.", ephemeral=True)
+            return await interaction.response.send_message(interaction_text(self.bot, interaction, 'ai_pending'), ephemeral=True)
         token = object()
         previous = self.memory.get(key)
         if remember:
@@ -238,7 +239,7 @@ class AIAgent(commands.Cog):
             result = await self.answer(question, previous[:2]) if remember and previous else await self.answer(question)
             if not self.chat_authorized(interaction):
                 raise ValueError("Authorization changed")
-            notice = "\n\nContext: last exchange in RAM for 10 min. /ai_clear removes it." if remember and self.pending_memory.get(key) is token else ""
+            notice = ("\n\n" + interaction_text(self.bot, interaction, "ai_context")) if remember and self.pending_memory.get(key) is token else ""
             await interaction.followup.send(result[:1600] + notice, ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
             if remember:
@@ -248,7 +249,7 @@ class AIAgent(commands.Cog):
             await interaction.followup.send(exc.user_message(), ephemeral=True)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             LOG.warning("AI Q&A failed: %s", type(exc).__name__)
-            await interaction.followup.send("AI غير متاح مؤقتاً.", ephemeral=True)
+            await interaction.followup.send(interaction_text(self.bot, interaction, 'ai_failed'), ephemeral=True)
         finally:
             if self.pending_memory.get(key) is token:
                 self.pending_memory.pop(key, None)
@@ -257,7 +258,7 @@ class AIAgent(commands.Cog):
     @app_commands.guild_only()
     async def ai_clear(self, interaction: discord.Interaction):
         self.clear_memory(self.memory_key(interaction))
-        await interaction.response.send_message("Bot-side context cleared. This does not delete provider records or Discord messages.", ephemeral=True)
+        await interaction.response.send_message(interaction_text(self.bot, interaction, 'ai_clear'), ephemeral=True)
 
     @app_commands.command(name="ai_admin", description="TOV4R AI administration — owner only; request sent to OpenAI")
     @app_commands.guild_only()
