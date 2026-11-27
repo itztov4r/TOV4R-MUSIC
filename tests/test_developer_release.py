@@ -333,7 +333,7 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         from collections import defaultdict
         from unittest.mock import Mock
         from voice_welcome import VoiceWelcome
-        store = SimpleNamespace(update=Mock())
+        store = SimpleNamespace(update=Mock(), config=lambda _: {'language': 'en'})
         locks = defaultdict(asyncio.Lock)
         cog = VoiceWelcome(SimpleNamespace(store=store, locks=locks))
         client = Mock()
@@ -491,6 +491,31 @@ class DashboardAudioTests(unittest.IsolatedAsyncioTestCase):
             await dashboard.voice_reset(request())
             self.assertFalse(cog.custom_audio(123).exists())
             self.assertTrue(cog.custom_audio(456).exists())
+
+
+class MultiLanguageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_permission_reply_follows_guild_language(self):
+        from voice_welcome import VoiceWelcome
+        languages = {1: "fr", 2: "darija", 3: "en"}
+        cog = VoiceWelcome(SimpleNamespace(store=SimpleNamespace(config=lambda gid: {"language": languages[gid]})))
+        for gid, expected in [(1, "Réservé au propriétaire ou à un administrateur."), (2, "Ghir Owner wla Administrator."), (3, "Server owner or Administrator only.")]:
+            i = SimpleNamespace(guild=SimpleNamespace(id=gid, owner_id=10),
+                guild_id=gid, user=SimpleNamespace(id=20), permissions=discord.Permissions.none(),
+                response=SimpleNamespace(send_message=AsyncMock()))
+            await cog.upload_audio.callback(cog, i, None)
+            i.response.send_message.assert_awaited_once_with(expected, ephemeral=True)
+
+    async def test_translations_have_equal_placeholders(self):
+        from localization import LANGUAGES, STRINGS, translate
+        from string import Formatter
+        for key in STRINGS:
+            if not key.startswith(("vw_", "ai_")):
+                continue
+            entries = STRINGS[key]
+            self.assertEqual(len(entries), len(LANGUAGES))
+            placeholders = [{field for _, field, _, _ in Formatter().parse(text) if field} for text in entries]
+            self.assertTrue(all(p == placeholders[0] for p in placeholders))
+        self.assertEqual(translate("invalid", "vw_off"), translate("en", "vw_off"))
 
 
 if __name__ == "__main__":
