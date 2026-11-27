@@ -1,11 +1,14 @@
 """Private owner dashboard. Same-process real data, bearer auth, no token in URLs."""
 import hmac
 import os
+import math
+import time
 from pathlib import Path
 from aiohttp import web
 from store import validate_config
 
 async def start_dashboard(bot):
+    started = time.monotonic()
     key=os.getenv('DASHBOARD_KEY','').strip()
     if len(key)<32:
         print('Dashboard disabled: set a random DASHBOARD_KEY of at least 32 characters.')
@@ -27,7 +30,7 @@ async def start_dashboard(bot):
     async def index(request): return web.FileResponse(Path(__file__).parent/'web/index.html')
     async def asset(request):
         name=request.match_info['name']
-        if name not in ('app.js','style.css'): raise web.HTTPNotFound()
+        if name not in ('app.js','style.css','public.js'): raise web.HTTPNotFound()
         return web.FileResponse(Path(__file__).parent/'web'/name)
     async def state(request):
         guilds=[]
@@ -68,9 +71,14 @@ async def start_dashboard(bot):
     async def public_stats(request):
         # Only a global server count and connection status; never expose guild IDs or user data.
         ready=bot.is_ready()
-        return web.json_response({'online':ready,'servers':len(bot.guilds) if ready else None},
+        latency=bot.latency
+        return web.json_response({'online':ready,'servers':len(bot.guilds) if ready else None,
+            'gateway_latency_ms':round(latency*1000) if ready and math.isfinite(latency) else None,
+            'process_uptime_seconds':int(time.monotonic()-started)},
             headers={'Access-Control-Allow-Origin':'https://tov4r.xyz','Vary':'Origin'})
+    async def public_page(request): return web.FileResponse(Path(__file__).parent/'web/public.html')
     app.router.add_get('/public/stats',public_stats)
+    app.router.add_get('/status',public_page)
     app.router.add_get('/',index); app.router.add_get('/assets/{name}',asset)
     app.router.add_get('/api/state',state); app.router.add_put('/api/guild/{guild}',update)
     from web_dashboard_v2 import add_dashboard_v2
