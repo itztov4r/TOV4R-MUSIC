@@ -80,7 +80,7 @@ class DeveloperEdition(commands.Cog):
                     name="TOV4R | Mention spam protection",
                     event_type=discord.AutoModRuleEventType.message_send,
                     trigger=discord.AutoModTrigger(mention_limit=mention_limit),
-                    actions=[discord.AutoModRuleAction.block_message(custom_message="Too many mentions in one message.")],
+                    actions=[discord.AutoModRuleAction(custom_message="Too many mentions in one message.")],
                     enabled=True,
                     reason=f"Opt-in native AutoMod requested by administrator {i.user.id}")
             except discord.HTTPException:
