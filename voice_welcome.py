@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import time
+import tempfile
 
 import aiohttp
 import discord
@@ -94,6 +95,56 @@ class VoiceWelcome(commands.Cog):
             temp.write_bytes(bundled.read_bytes())
             temp.replace(self.audio)
 
+    def custom_audio(self, guild_id):
+        return self.audio.parent / f'welcome-custom-{int(guild_id)}.ogg'
+
+    def playback_path(self, guild_id):
+        custom = self.custom_audio(guild_id)
+        return custom if custom.is_file() and 0 < custom.stat().st_size <= MAX_AUDIO else self.audio
+
+    @welcome.command(name='audio', description='Upload an authorized custom welcome recording (max 2 MB, first 15 seconds)')
+    @app_commands.guild_only()
+    async def upload_audio(self, i: discord.Interaction, file: discord.Attachment):
+        if i.user.id != i.guild.owner_id:
+            return await i.response.send_message('Server owner only.', ephemeral=True)
+        formats = {'.mp3': 'mp3', '.wav': 'wav', '.ogg': 'ogg', '.m4a': 'mov'}
+        fmt = formats.get(Path(file.filename).suffix.lower())
+        if not fmt or not 0 < file.size <= MAX_AUDIO:
+            return await i.response.send_message('Upload MP3, WAV, OGG or M4A, up to 2 MB. Use only audio you have permission to play.', ephemeral=True)
+        await i.response.defer(ephemeral=True, thinking=True)
+        target = self.custom_audio(i.guild_id)
+        try:
+            async with self.audio_lock:
+                data = await asyncio.wait_for(file.read(), timeout=15)
+                if not 0 < len(data) <= MAX_AUDIO:
+                    raise ValueError('Invalid audio size')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
+                    source = Path(tmp) / 'input'
+                    output = Path(tmp) / 'welcome.ogg'
+                    source.write_bytes(data)
+                    proc = await asyncio.create_subprocess_exec('ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-f', fmt, '-i', str(source), '-map', '0:a:0', '-vn', '-t', '15', '-af', 'loudnorm=I=-18:TP=-2:LRA=7', '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-y', str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=20)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                        raise
+                    if proc.returncode or not output.is_file() or not 0 < output.stat().st_size <= MAX_AUDIO:
+                        raise ValueError('Audio conversion failed')
+                    output.replace(target)
+        except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError, aiohttp.ClientError):
+            return await i.followup.send('Invalid audio or conversion failed. Existing greeting unchanged.', ephemeral=True)
+        await i.followup.send('Custom welcome saved for this server. Audio is normalized and converted to Opus. Existing voice room settings are unchanged.', ephemeral=True)
+
+    @welcome.command(name='reset_audio', description='Remove custom recording and return to the default voice')
+    @app_commands.guild_only()
+    async def reset_audio(self, i: discord.Interaction):
+        if i.user.id != i.guild.owner_id:
+            return await i.response.send_message('Server owner only.', ephemeral=True)
+        self.custom_audio(i.guild_id).unlink(missing_ok=True)
+        await i.response.send_message('Default greeting restored.', ephemeral=True)
+
     @welcome.command(name="setup", description="Enable free offline greeting in one voice room")
     @app_commands.guild_only()
     @app_commands.describe(channel="Voice channel to greet in", confirm="Confirm automatic playback in this room")
@@ -169,7 +220,15 @@ class VoiceWelcome(commands.Cog):
                     if error:
                         LOG.warning("Welcome playback failed: %s", type(error).__name__)
                     loop.call_soon_threadsafe(done.set)
-                source = discord.FFmpegPCMAudio(str(self.audio), options="-vn")
+                # Give the joining Discord client time to establish its audio stream.
+                await asyncio.sleep(1.2)
+                if not member.voice or member.voice.channel != channel or not client.is_connected():
+                    return
+                clip = self.playback_path(guild.id)
+                if clip.suffix == '.ogg':
+                    source = discord.FFmpegOpusAudio(str(clip), codec='copy', options='-vn')
+                else:
+                    source = discord.FFmpegOpusAudio(str(clip), bitrate=96, options='-vn -af loudnorm=I=-18:TP=-2:LRA=7')
                 try:
                     client.play(source, after=finished)
                     started_playback = True
