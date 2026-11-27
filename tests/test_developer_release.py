@@ -136,7 +136,7 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         try:
             await bot.add_cog(VoiceWelcome(bot))
             group = bot.tree.get_command("voicewelcome")
-            self.assertEqual({c.name for c in group.commands}, {"setup", "off"})
+            self.assertEqual({c.name for c in group.commands}, {"setup", "off", "audio", "reset_audio"})
         finally:
             await bot.close()
 
@@ -198,6 +198,18 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
                 await cog.prepare()
                 self.assertEqual(cog.audio.read_bytes(), b"test bundled clip")
                 session.assert_not_called()
+
+
+    async def test_custom_audio_is_guild_scoped(self):
+        from voice_welcome import VoiceWelcome
+        from pathlib import Path
+        import tempfile
+        cog = VoiceWelcome(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "welcome.mp3"
+            cog.custom_audio(123).write_bytes(b"custom clip")
+            self.assertEqual(cog.playback_path(123), cog.custom_audio(123))
+            self.assertEqual(cog.playback_path(456), cog.audio)
 
 
 if __name__ == "__main__":
