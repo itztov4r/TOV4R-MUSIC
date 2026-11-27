@@ -76,15 +76,34 @@ function renderThemes() {
   }
 }
 
+const uiText = {
+  notConfigured:['NOT CONFIGURED','NON CONFIGURÉ','MA CONFIGURACH'],
+  unavailable:['ROOM UNAVAILABLE','SALON INDISPONIBLE','ROOM MA KAYNACH'],
+  connected:['BOT IN ROOM','BOT CONNECTÉ','BOT CONNECTÉ'],
+  disconnected:['NOT CONNECTED','NON CONNECTÉ','MA CONNECTACH'],
+  noRoom:['No room selected','Aucun salon sélectionné','Ma khtart ta room'],
+  configuredRoom:['Configured room','Salon configuré','Room configurée'],
+  access:['Owner / Administrator: use these commands in your Discord server.','Propriétaire / administrateur : utilisez ces commandes dans Discord.','Owner / Admin: sta3mel had commands f Discord.'],
+  denied:['Only the server owner or an Administrator may configure voice welcome.','Seuls le propriétaire et les administrateurs peuvent configurer l’accueil vocal.','Ghir Owner wla Admin y9der yconfiguri Voice Welcome.'],
+  members:['Members','Membres','Membres'], channels:['Channels','Salons','Rooms'], roles:['Roles','Rôles','Roles'],
+  bots:['Bots visible','Bots visibles','Bots visibles'], tabs:['Open TABs','TAB ouverts','TAB ma7loulin'], tickets:['Open tickets','Tickets ouverts','Tickets ma7loulin'],
+};
+function guildLanguage(g){return ['en','fr','darija'].includes(g?.settings?.language)?g.settings.language:'en';}
+function ui(key,g){return uiText[key][['en','fr','darija'].indexOf(guildLanguage(g))];}
+function localizeDashboard(g){
+  const lang=guildLanguage(g);
+  document.documentElement.lang=lang==='darija'?'ary-Latn':lang;
+  for(const node of document.querySelectorAll('[data-lang-en]')) node.textContent=node.getAttribute('data-lang-'+lang);
+}
 function renderVoice(g) {
   const v=g?.voice_welcome;
-  $('voice-connection').textContent=!v?'—':!v.configured?'NOT CONFIGURED':
-    !v.channel_available?'ROOM UNAVAILABLE':v.connected?'BOT IN ROOM':'NOT CONNECTED';
+  $('voice-connection').textContent=!v?'—':!v.configured?ui('notConfigured',g):
+    !v.channel_available?ui('unavailable',g):v.connected?ui('connected',g):ui('disconnected',g);
   $('voice-connection').classList.toggle('connected',!!v?.connected);
-  $('voice-room').textContent=v?.channel_name|| (v?.configured?'Configured room':'No room selected');
+  $('voice-room').textContent=v?.channel_name|| (v?.configured?ui('configuredRoom',g):ui('noRoom',g));
   $('voice-access').textContent=v?.can_manage
-    ? 'Owner / Administrator: use these commands in your Discord server.'
-    : 'Only the server owner or an Administrator may configure voice welcome.';
+    ? ui('access',g)
+    : ui('denied',g);
   for(const button of document.querySelectorAll('[data-copy]')) button.disabled=!v?.can_manage;
   $('voice-upload-form').hidden=!v?.can_manage;
   $('voice-file').value='';
@@ -106,6 +125,7 @@ function renderActivity() {
 function renderGuild() {
   const g = guild();
   $('activity-filter').value='';
+  localizeDashboard(g);
   renderVoice(g);
   if (!g) {
     $('guild-name').textContent='No server available';
@@ -127,7 +147,7 @@ function renderGuild() {
   $('guild-theme').textContent='Current template: '+(g.type||'community');
   $('stats').replaceChildren();
   for(const [label,number] of [
-    ['Members',g.members ?? '—'],['Channels',g.channels],['Roles',g.roles],['Bots visible',g.bots],['Open TABs',g.open_rooms],['Open tickets',g.open_tickets]
+    [ui('members',g),g.members ?? '—'],[ui('channels',g),g.channels],[ui('roles',g),g.roles],[ui('bots',g),g.bots],[ui('tabs',g),g.open_rooms],[ui('tickets',g),g.open_tickets]
   ]) {
     const card=el('div','','stat');
     card.append(el('small',label),el('strong',String(number)));
