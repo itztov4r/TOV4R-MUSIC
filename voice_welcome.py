@@ -16,6 +16,14 @@ GREETING = "مرحبا بيك ف سيرفر توفار! أنا البوت ديا
 MAX_AUDIO = 2_000_000
 
 
+def can_manage_voice_welcome(interaction):
+    # Use Discord's resolved permissions in this guild, not role names.
+    return bool(interaction.guild is not None and (
+        interaction.user.id == interaction.guild.owner_id
+        or interaction.permissions.administrator
+    ))
+
+
 def should_greet(member, before, after, channel_id):
     return bool(channel_id and not member.bot and after.channel
                 and before.channel != after.channel and after.channel.id == channel_id
@@ -105,8 +113,8 @@ class VoiceWelcome(commands.Cog):
     @welcome.command(name='audio', description='Upload an authorized custom welcome recording (max 2 MB, first 15 seconds)')
     @app_commands.guild_only()
     async def upload_audio(self, i: discord.Interaction, file: discord.Attachment):
-        if i.user.id != i.guild.owner_id:
-            return await i.response.send_message('Server owner only.', ephemeral=True)
+        if not can_manage_voice_welcome(i):
+            return await i.response.send_message('Server owner or Administrator only.', ephemeral=True)
         formats = {'.mp3': 'mp3', '.wav': 'wav', '.ogg': 'ogg', '.m4a': 'mov'}
         fmt = formats.get(Path(file.filename).suffix.lower())
         if not fmt or not 0 < file.size <= MAX_AUDIO:
@@ -140,8 +148,8 @@ class VoiceWelcome(commands.Cog):
     @welcome.command(name='reset_audio', description='Remove custom recording and return to the default voice')
     @app_commands.guild_only()
     async def reset_audio(self, i: discord.Interaction):
-        if i.user.id != i.guild.owner_id:
-            return await i.response.send_message('Server owner only.', ephemeral=True)
+        if not can_manage_voice_welcome(i):
+            return await i.response.send_message('Server owner or Administrator only.', ephemeral=True)
         self.custom_audio(i.guild_id).unlink(missing_ok=True)
         await i.response.send_message('Default greeting restored.', ephemeral=True)
 
@@ -149,8 +157,8 @@ class VoiceWelcome(commands.Cog):
     @app_commands.guild_only()
     @app_commands.describe(channel="Voice channel to greet in", confirm="Confirm automatic playback in this room")
     async def setup(self, i: discord.Interaction, channel: discord.VoiceChannel, confirm: bool = False):
-        if i.user.id != i.guild.owner_id:
-            return await i.response.send_message("Server owner only.", ephemeral=True)
+        if not can_manage_voice_welcome(i):
+            return await i.response.send_message("Server owner or Administrator only.", ephemeral=True)
         if channel.id == self.bot.store.config(i.guild_id)["voice_creator"]:
             return await i.response.send_message("Choose a normal voice room, not the TAB creator.", ephemeral=True)
         me = i.guild.me
@@ -177,8 +185,8 @@ class VoiceWelcome(commands.Cog):
     @welcome.command(name="off", description="Disable automatic voice greeting")
     @app_commands.guild_only()
     async def off(self, i: discord.Interaction):
-        if i.user.id != i.guild.owner_id:
-            return await i.response.send_message("Server owner only.", ephemeral=True)
+        if not can_manage_voice_welcome(i):
+            return await i.response.send_message("Server owner or Administrator only.", ephemeral=True)
         await i.response.defer(ephemeral=True)
         async with self.bot.locks[('voice_welcome', i.guild_id)]:
             self.bot.store.update(i.guild_id, {'voice_welcome_channel': 0})
