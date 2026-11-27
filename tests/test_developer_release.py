@@ -113,5 +113,46 @@ class ModuleReleaseTests(unittest.IsolatedAsyncioTestCase):
             await service.settings(SimpleNamespace())
 
 
+class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_entry_into_selected_room(self):
+        from unittest.mock import Mock
+        from voice_welcome import should_greet
+        room = Mock(spec=discord.VoiceChannel)
+        room.id = 123
+        other = SimpleNamespace(id=456)
+        human = SimpleNamespace(bot=False)
+        before = SimpleNamespace(channel=other)
+        after = SimpleNamespace(channel=room)
+        self.assertTrue(should_greet(human, before, after, 123))
+        self.assertFalse(should_greet(human, before, after, 456))
+        self.assertFalse(should_greet(human, after, after, 123))
+        self.assertFalse(should_greet(SimpleNamespace(bot=True), before, after, 123))
+        self.assertFalse(should_greet(human, after, SimpleNamespace(channel=None), 123))
+        self.assertFalse(should_greet(human, before, after, 0))
+
+    async def test_voice_welcome_commands_register(self):
+        from voice_welcome import VoiceWelcome
+        bot = commands.Bot(command_prefix=".", intents=discord.Intents.none())
+        try:
+            await bot.add_cog(VoiceWelcome(bot))
+            group = bot.tree.get_command("voicewelcome")
+            self.assertEqual({c.name for c in group.commands}, {"setup", "off"})
+        finally:
+            await bot.close()
+
+    async def test_existing_cached_audio_does_not_call_provider(self):
+        from voice_welcome import VoiceWelcome
+        from pathlib import Path
+        from unittest.mock import patch
+        import tempfile
+        cog = VoiceWelcome(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "welcome.mp3"
+            cog.audio.write_bytes(b"test cache")
+            with patch("voice_welcome.aiohttp.ClientSession") as session:
+                await cog.prepare()
+                session.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
