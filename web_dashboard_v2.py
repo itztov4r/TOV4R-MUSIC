@@ -41,6 +41,7 @@ PLAN_SECONDS = 600
 SAFE_CONFIG = frozenset({
     "levels", "antispam", "anti_invites", "voice_xp", "security_enabled",
     "welcome_text", "blocked_words", "xp_cooldown", "language", "anti_links", "automod_progressive",
+    "voice_rooms_enabled", "voice_panel_enabled", "tickets_enabled", "ai_enabled", "goodbye_enabled",
 })
 
 
@@ -275,6 +276,9 @@ class DashboardV2:
                     self._can_setup(principal, guild) and guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
+                "open_rooms": self.bot.store.one("SELECT COUNT(*) n FROM rooms WHERE guild=?", (guild.id,))["n"],
+                "open_tickets": self.bot.store.one("SELECT COUNT(*) n FROM tickets WHERE guild=? AND closed=0", (guild.id,))["n"],
+                "can_manage_ai": principal["sid"] is None or str(guild.owner_id) == principal["actor"],
                 "activity": self.bot.store.all(
                     "SELECT kind, detail, at FROM events WHERE guild=? "
                     "ORDER BY id DESC LIMIT 12", (guild.id,)
@@ -389,6 +393,8 @@ class DashboardV2:
             changes = validate_config(data)
         except ValueError as exc:
             raise web.HTTPBadRequest(text=str(exc))
+        if "ai_enabled" in changes and principal["sid"] is not None and str(guild.owner_id) != principal["actor"]:
+            raise web.HTTPForbidden(text="Only the server owner can change AI access")
         old = self.bot.store.config(guild.id)
         self.bot.store.update(guild.id, changes)
         if any(key in changes and old[key] != changes[key] for key in ("levels", "voice_xp")):
@@ -405,6 +411,8 @@ class DashboardV2:
 
     async def restore(self, request):
         principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text="Server owner or Administrator only for layout restore")
         async with self.bot.locks[("setup", guild.id)]:
             result = await restore_server(self.bot, guild)
             await self.bot.audit(

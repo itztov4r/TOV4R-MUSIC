@@ -80,6 +80,7 @@ class AIAgent(commands.Cog):
             and interaction.guild is not None
             and (self.all_guilds or (self.guild_id.isdecimal() and interaction.guild.id == int(self.guild_id)))
             and interaction.user.id == interaction.guild.owner_id
+            and self.bot.store.config(interaction.guild.id)['ai_enabled']
         )
 
     async def plan(self, request):
