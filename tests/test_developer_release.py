@@ -432,5 +432,66 @@ class AIContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["input"][-1]["content"], "Follow-up")
 
 
+class DashboardAudioTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_endpoint_denies_nonadministrator(self):
+        from aiohttp import web
+        from web_dashboard_v2 import DashboardV2
+        dashboard = DashboardV2(SimpleNamespace())
+        dashboard._guild = AsyncMock(return_value=(
+            {"sid": "session", "actor": "9", "setup_guilds": set()},
+            SimpleNamespace(id=123)))
+        with self.assertRaises(web.HTTPForbidden):
+            await dashboard.voice_upload(SimpleNamespace())
+        with self.assertRaises(web.HTTPForbidden):
+            await dashboard.voice_reset(SimpleNamespace())
+
+    async def test_voice_upload_is_guild_scoped_and_rechecks_before_commit(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from aiohttp import web
+        from web_dashboard_v2 import DashboardV2
+        from voice_welcome import VoiceWelcome
+        store = SimpleNamespace(event=Mock())
+        bot = SimpleNamespace(store=store)
+        cog = VoiceWelcome(bot)
+        dashboard = DashboardV2(bot)
+        guild = SimpleNamespace(id=123)
+        dashboard._voice_access = AsyncMock(return_value=({"actor": "9"}, guild, cog))
+        dashboard._recheck_voice_access = AsyncMock()
+        async def chunks(size):
+            yield b"test"
+        async def convert(source, output, fmt):
+            self.assertEqual(source.read_bytes(), b"test")
+            self.assertEqual(fmt, "mp3")
+            output.write_bytes(b"converted")
+        cog.convert_audio = AsyncMock(side_effect=convert)
+        def request():
+            return SimpleNamespace(headers={"X-Audio-Extension": ".mp3", "X-Audio-Consent": "yes"},
+                content_type="application/octet-stream", content_length=4,
+                content=SimpleNamespace(iter_chunked=chunks))
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "default.mp3"
+            cog.custom_audio(123).write_bytes(b"old")
+            cog.custom_audio(456).write_bytes(b"other")
+            dashboard._recheck_voice_access.side_effect = web.HTTPForbidden()
+            with self.assertRaises(web.HTTPForbidden):
+                await dashboard.voice_upload(request())
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"old")
+            dashboard._recheck_voice_access.side_effect = None
+            result = await dashboard.voice_upload(request())
+            self.assertEqual(result.status, 200)
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted")
+            self.assertEqual(cog.custom_audio(456).read_bytes(), b"other")
+            invalid = request()
+            invalid.content_length = 64_000_001
+            with self.assertRaises(web.HTTPBadRequest):
+                await dashboard.voice_upload(invalid)
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted")
+            await dashboard.voice_reset(request())
+            self.assertFalse(cog.custom_audio(123).exists())
+            self.assertTrue(cog.custom_audio(456).exists())
+
+
 if __name__ == "__main__":
     unittest.main()
