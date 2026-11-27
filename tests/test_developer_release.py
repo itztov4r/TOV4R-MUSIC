@@ -518,5 +518,34 @@ class MultiLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(translate("invalid", "vw_off"), translate("en", "vw_off"))
 
 
+class SecurityV2Tests(unittest.TestCase):
+    def test_bounded_events_isolation_and_expiry(self):
+        from security_monitor import SecurityMonitor
+        monitor = SecurityMonitor()
+        for n in range(1000):
+            monitor.observe(1, "join", now=1000+n/1000)
+        self.assertLessEqual(len(monitor.events[(1,"join")]), 8)
+        self.assertTrue(monitor.snapshot(1, now=1001)["paused"])
+        self.assertFalse(monitor.snapshot(2, now=1001)["paused"])
+        self.assertEqual(monitor.snapshot(2, now=1001)["recent_alert_types"], 0)
+        self.assertEqual(monitor.snapshot(1, now=1001)["recent_alert_types"], 1)
+        monitor.prune(1200)
+        self.assertFalse(monitor.snapshot(1, now=1200)["paused"])
+        self.assertFalse(monitor.events)
+
+    def test_disabled_monitor_does_not_report_active_pause(self):
+        from security_monitor import SecurityMonitor
+        from web_dashboard_v2 import DashboardV2
+        monitor = SecurityMonitor()
+        for n in range(8):
+            monitor.observe(1, "join")
+        service = DashboardV2(SimpleNamespace(security=monitor))
+        guild = SimpleNamespace(id=1, me=SimpleNamespace(guild_permissions=discord.Permissions(view_audit_log=True)))
+        self.assertTrue(service.security_status(guild, {"security_enabled": True})["paused"])
+        self.assertFalse(service.security_status(guild, {"security_enabled": False})["paused"])
+        monitor.clear(1)
+        self.assertFalse(service.security_status(guild, {"security_enabled": True})["paused"])
+
+
 if __name__ == "__main__":
     unittest.main()
