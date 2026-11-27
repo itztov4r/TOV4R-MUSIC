@@ -211,8 +211,130 @@ class Community(commands.Bot):
             e.set_thumbnail(url=member.display_avatar.url)
             try: await c.send(embed=e)
             except discord.HTTPException: pass
+    async def private_support_setup(self, message):
+        """Owner-only DM entry point; never registered as a public command."""
+        owner = os.getenv('TOV4R_PRIVATE_SETUP_OWNER_ID', '').strip()
+        if not owner or str(message.author.id) != owner:
+            return
+        args = message.content.split()
+        if len(args) == 1:
+            owned = [g for g in self.guilds if g.owner_id == message.author.id]
+            lines = [f'{discord.utils.escape_markdown(g.name)} — `{g.id}`' for g in owned[:15]]
+            await message.channel.send('Private TOV4R setup. Invite the bot to your new server first.\n'
+                + ('\n'.join(lines) if lines else 'No owned servers found.')
+                + '\nPreview: `.setup-support SERVER_ID`')
+            return
+        if len(args) not in (2, 3) or not args[1].isascii() or not args[1].isdigit() or len(args[1]) > 20 or (len(args) == 3 and args[2] != 'confirm'):
+            await message.channel.send('Usage: `.setup-support SERVER_ID`')
+            return
+        guild = self.get_guild(int(args[1]))
+        if guild is None or guild.owner_id != message.author.id:
+            await message.channel.send('Only a server you own and the bot has joined is eligible.')
+            return
+        if len(args) == 2:
+            await message.channel.send(f'Preview for **{discord.utils.escape_markdown(guild.name)}**: '
+                '6 categories, 23 channels and 9 optional roles (the bot role already exists). '
+                'No deletion, no automatic staff/admin privileges, staff channels private by default. '
+                'Existing resources are not edited.\n'
+                f'Confirm: `.setup-support {guild.id} confirm`')
+            return
+        key = '__private_tov4r_support__'
+        groups = (
+            ('📌・INFORMATION', ('📢・announcements','👋・welcome','📜・rules','🔗・invite-bot','📡・bot-status'), ()),
+            ('🤖・TOV4R BOT', ('📚・commands','🧪・test-bot','🆕・changelog','💡・suggestions','🐛・bug-reports'), ()),
+            ('🌐・COMMUNITY', ('💬・general','🇲🇦・darija','📸・media','🎮・gaming'), ()),
+            ('🎫・SUPPORT', ('🎫・create-ticket','❓・faq'), ()),
+            ('🔊・VOICE', (), ('🔊・General','➕・Create Voice','🤖・AI Voice')),
+            ('🔒・STAFF', ('💬・staff-chat','📋・mod-logs','⚙️・bot-logs','💻・development'), ()),
+        )
+        rolespec = (
+            ('👑 Founder',0xed4245),('💻 Developer',0x5865f2),('⚡ Administrator',0xe67e22),
+            ('🛡️ Moderator',0x3498db),('🎧 Support Team',0x1abc9c),('🧪 Beta Tester',0x9b59b6),
+            ('💎 Premium',0xeb459e),('🚀 Booster',0xf47fff),('👤 Member',0x949ba4),
+        )
+        readonly = {'📢・announcements','👋・welcome','📜・rules','🔗・invite-bot','📡・bot-status','📚・commands','🆕・changelog','❓・faq'}
+        def tracked(item):
+            row = self.store.one('SELECT discord_id FROM template_items WHERE guild=? AND template=? AND item_key=?',(guild.id,key,item))
+            return int(row['discord_id']) if row else None
+        def remember(item,obj,kind):
+            self.store.run('INSERT OR REPLACE INTO template_items(guild,template,item_key,discord_id,kind) VALUES(?,?,?,?,?)',(guild.id,key,item,obj.id,kind))
+        async with self.locks[('setup',guild.id)]:
+            if guild.owner_id != message.author.id:
+                return
+            me = guild.me
+            if me is None or not me.guild_permissions.manage_channels or not me.guild_permissions.manage_roles:
+                await message.channel.send('Bot needs Manage Channels and Manage Roles.')
+                return
+            # Refuse name collisions with untracked resources, without modifying them.
+            for name,_ in rolespec:
+                if any(x.name == name and x.id != tracked('role:'+name) for x in guild.roles):
+                    await message.channel.send('Existing role name conflicts with the template. Use a fresh server or rename the conflicting role: '+name)
+                    return
+            for category, texts, voices in groups:
+                if any(x.name == category and x.id != tracked('category:'+category) for x in guild.categories):
+                    await message.channel.send('Existing category name conflicts with the template: '+category)
+                    return
+                for name in texts+voices:
+                    if any(x.name == name and x.id != tracked('channel:'+category+':'+name) for x in guild.channels):
+                        await message.channel.send('Existing channel name conflicts with the template: '+name)
+                        return
+            created = 0
+            roles = {}
+            try:
+                for name, color in rolespec:
+                    item = 'role:'+name
+                    role = guild.get_role(tracked(item))
+                    if role is None:
+                        role = await guild.create_role(name=name, colour=discord.Colour(color),
+                            permissions=discord.Permissions.none(), mentionable=False, reason='Private TOV4R support template')
+                        remember(item,role,'role')
+                        created += 1
+                    roles[name] = role
+                for category,texts,voices in groups:
+                    private = category == '🔒・STAFF'
+                    overwrites = {
+                        guild.default_role:discord.PermissionOverwrite(view_channel=False),
+                        me:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True),
+                    } if private else {}
+                    if private:
+                        # Owner bypasses overwrites; trusted roles can be assigned manually.
+                        for name in ('👑 Founder','💻 Developer','⚡ Administrator','🛡️ Moderator'):
+                            role = roles[name]
+                            if role.permissions.value == 0:
+                                overwrites[role] = discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
+                    item = 'category:'+category
+                    cat = guild.get_channel(tracked(item))
+                    if not isinstance(cat,discord.CategoryChannel):
+                        cat = await guild.create_category(category,overwrites=overwrites,reason='Private TOV4R support template')
+                        remember(item,cat,'category')
+                        created += 1
+                    for name in texts+voices:
+                        item = 'channel:'+category+':'+name
+                        if guild.get_channel(tracked(item)) is not None:
+                            continue
+                        perms = dict(overwrites)
+                        if name in readonly:
+                            perms[guild.default_role] = discord.PermissionOverwrite(send_messages=False)
+                            perms[me] = discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
+                        if name in voices:
+                            channel = await guild.create_voice_channel(name,category=cat,overwrites=perms,reason='Private TOV4R support template')
+                        else:
+                            channel = await guild.create_text_channel(name,category=cat,overwrites=perms,reason='Private TOV4R support template')
+                        remember(item,channel,'channel')
+                        created += 1
+            except discord.HTTPException:
+                log.exception('Private support template failed for guild %s',guild.id)
+                await message.channel.send('Setup incomplete. Check bot permissions and retry the same confirmation; recorded resources will be reused.')
+                return
+            await message.channel.send(f'✅ Private template applied to **{discord.utils.escape_markdown(guild.name)}**. {created} new resources. Existing resources were not edited. Ticket/voice automation and status messages still need separate configuration.')
+
     async def on_message(self,message):
-        if not message.guild or message.author.bot or not isinstance(message.author,discord.Member): return
+        if message.author.bot: return
+        if not message.guild:
+            if message.content.split(maxsplit=1)[:1] == ['.setup-support']:
+                await self.private_support_setup(message)
+            return
+        if not isinstance(message.author,discord.Member): return
         cfg=self.store.config(message.guild.id)
         if await self.automod.handle(message): return
         if message.content.startswith('.'):
