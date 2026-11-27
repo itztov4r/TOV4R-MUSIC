@@ -212,5 +212,51 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cog.playback_path(456), cog.audio)
 
 
+    async def test_voice_welcome_permission_policy(self):
+        from voice_welcome import can_manage_voice_welcome
+        guild = SimpleNamespace(owner_id=10)
+        for user_id, permissions, allowed in [
+            (10, discord.Permissions.none(), True),
+            (20, discord.Permissions(administrator=True), True),
+            (20, discord.Permissions(manage_guild=True), False),
+            (20, discord.Permissions.none(), False),
+        ]:
+            i = SimpleNamespace(guild=guild, user=SimpleNamespace(id=user_id), permissions=permissions)
+            self.assertEqual(can_manage_voice_welcome(i), allowed)
+        self.assertFalse(can_manage_voice_welcome(SimpleNamespace(guild=None)))
+
+    async def test_non_admin_denied_all_voice_welcome_mutations(self):
+        from voice_welcome import VoiceWelcome
+        cog = VoiceWelcome(SimpleNamespace())
+        for command, args in [(cog.setup, (None, True)), (cog.off, ()),
+                              (cog.upload_audio, (None,)), (cog.reset_audio, ())]:
+            i = SimpleNamespace(
+                guild=SimpleNamespace(owner_id=10),
+                user=SimpleNamespace(id=20), permissions=discord.Permissions.none(),
+                response=SimpleNamespace(send_message=AsyncMock()),
+            )
+            await command.callback(cog, i, *args)
+            i.response.send_message.assert_awaited_once_with(
+                "Server owner or Administrator only.", ephemeral=True)
+
+    async def test_administrator_can_preview_voice_welcome(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cog = VoiceWelcome(SimpleNamespace(store=SimpleNamespace(
+            config=lambda _: {"voice_creator": 99}, update=Mock())))
+        channel = Mock(spec=discord.VoiceChannel)
+        channel.id = 123
+        channel.permissions_for.return_value = discord.Permissions(
+            view_channel=True, connect=True, speak=True)
+        i = SimpleNamespace(
+            guild=SimpleNamespace(owner_id=10, me=object()), guild_id=456,
+            user=SimpleNamespace(id=20), permissions=discord.Permissions(administrator=True),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        await cog.setup.callback(cog, i, channel, False)
+        self.assertIn("Preview:", i.response.send_message.await_args.args[0])
+        cog.bot.store.update.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
