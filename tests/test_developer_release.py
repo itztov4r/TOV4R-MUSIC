@@ -298,5 +298,35 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         cog.bot.store.update.assert_not_called()
 
 
+    async def test_long_welcome_upload_uses_full_duration_and_guild_file(self):
+        from voice_welcome import VoiceWelcome, MAX_AUDIO, MAX_WELCOME_SECONDS, PLAYBACK_TIMEOUT
+        from unittest.mock import patch
+        from pathlib import Path
+        import tempfile
+        self.assertEqual(MAX_WELCOME_SECONDS, 60)
+        self.assertGreaterEqual(PLAYBACK_TIMEOUT, MAX_WELCOME_SECONDS + 10)
+        self.assertEqual(MAX_AUDIO, 12_000_000)
+        cog = VoiceWelcome(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "welcome.mp3"
+            i = SimpleNamespace(
+                guild=SimpleNamespace(owner_id=1), guild_id=123,
+                user=SimpleNamespace(id=1),
+                response=SimpleNamespace(defer=AsyncMock()),
+                followup=SimpleNamespace(send=AsyncMock()))
+            file = SimpleNamespace(filename="intro.mp3", size=3_000_000,
+                                   read=AsyncMock(return_value=b"x" * 3_000_000))
+            async def convert(*args, **kwargs):
+                self.assertEqual(args[args.index("-t") + 1], "60")
+                Path(args[-1]).write_bytes(b"converted audio")
+                return SimpleNamespace(wait=AsyncMock(), returncode=0)
+            with patch("voice_welcome.asyncio.create_subprocess_exec", side_effect=convert) as process:
+                await cog.upload_audio.callback(cog, i, file)
+                process.assert_awaited_once()
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted audio")
+            self.assertFalse(cog.custom_audio(456).exists())
+            self.assertIn("60 seconds", i.followup.send.await_args.args[0])
+
+
 if __name__ == "__main__":
     unittest.main()

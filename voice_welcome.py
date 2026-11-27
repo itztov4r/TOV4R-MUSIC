@@ -13,7 +13,9 @@ from discord.ext import commands, tasks
 
 LOG = logging.getLogger("tov4r.voice_welcome")
 GREETING = "مرحبا بيك ف سيرفر توفار! أنا البوت ديال السيرفر، وهاد الصوت مولد بالذكاء الاصطناعي. نتمنى ليك وقت زوين."
-MAX_AUDIO = 2_000_000
+MAX_AUDIO = 12_000_000
+MAX_WELCOME_SECONDS = 60
+PLAYBACK_TIMEOUT = MAX_WELCOME_SECONDS + 15
 
 
 def can_manage_voice_welcome(interaction):
@@ -110,7 +112,7 @@ class VoiceWelcome(commands.Cog):
         custom = self.custom_audio(guild_id)
         return custom if custom.is_file() and 0 < custom.stat().st_size <= MAX_AUDIO else self.audio
 
-    @welcome.command(name='audio', description='Upload an authorized custom welcome recording (max 2 MB, first 15 seconds)')
+    @welcome.command(name='audio', description='Upload a custom welcome recording (max 12 MB, first 60 seconds)')
     @app_commands.guild_only()
     async def upload_audio(self, i: discord.Interaction, file: discord.Attachment):
         if not can_manage_voice_welcome(i):
@@ -118,7 +120,7 @@ class VoiceWelcome(commands.Cog):
         formats = {'.mp3': 'mp3', '.wav': 'wav', '.ogg': 'ogg', '.m4a': 'mov'}
         fmt = formats.get(Path(file.filename).suffix.lower())
         if not fmt or not 0 < file.size <= MAX_AUDIO:
-            return await i.response.send_message('Upload MP3, WAV, OGG or M4A, up to 2 MB. Use only audio you have permission to play.', ephemeral=True)
+            return await i.response.send_message('Upload MP3, WAV, OGG or M4A, up to 12 MB (first 60 seconds). Use only audio you have permission to play.', ephemeral=True)
         await i.response.defer(ephemeral=True, thinking=True)
         target = self.custom_audio(i.guild_id)
         try:
@@ -131,9 +133,9 @@ class VoiceWelcome(commands.Cog):
                     source = Path(tmp) / 'input'
                     output = Path(tmp) / 'welcome.ogg'
                     source.write_bytes(data)
-                    proc = await asyncio.create_subprocess_exec('ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-f', fmt, '-i', str(source), '-map', '0:a:0', '-vn', '-t', '15', '-af', 'loudnorm=I=-18:TP=-2:LRA=7', '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-y', str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    proc = await asyncio.create_subprocess_exec('ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-f', fmt, '-i', str(source), '-map', '0:a:0', '-vn', '-t', str(MAX_WELCOME_SECONDS), '-af', 'loudnorm=I=-18:TP=-2:LRA=7', '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-y', str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                     try:
-                        await asyncio.wait_for(proc.wait(), timeout=20)
+                        await asyncio.wait_for(proc.wait(), timeout=40)
                     except asyncio.TimeoutError:
                         proc.kill()
                         await proc.wait()
@@ -143,7 +145,7 @@ class VoiceWelcome(commands.Cog):
                     output.replace(target)
         except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError, aiohttp.ClientError):
             return await i.followup.send('Invalid audio or conversion failed. Existing greeting unchanged.', ephemeral=True)
-        await i.followup.send('Custom welcome saved for this server. Audio is normalized and converted to Opus. Existing voice room settings are unchanged.', ephemeral=True)
+        await i.followup.send('Custom welcome saved for this server. Audio is normalized and converted to Opus (first 60 seconds). Existing voice room settings are unchanged.', ephemeral=True)
 
     @welcome.command(name='reset_audio', description='Remove custom recording and return to the default voice')
     @app_commands.guild_only()
@@ -243,7 +245,7 @@ class VoiceWelcome(commands.Cog):
                 except Exception:
                     source.cleanup()
                     raise
-                await asyncio.wait_for(done.wait(), timeout=25)
+                await asyncio.wait_for(done.wait(), timeout=PLAYBACK_TIMEOUT)
             except (discord.DiscordException, asyncio.TimeoutError, OSError, RuntimeError) as exc:
                 LOG.warning("Voice welcome failed guild=%s: %s", guild.id, type(exc).__name__)
             finally:
