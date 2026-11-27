@@ -84,6 +84,8 @@ class Community(commands.Bot):
         log.info('Authenticated application ID: %s',self.application_id)
         await self.add_cog(Features(self))
         await self.add_cog(AutoModCommands(self))
+        from developer_edition import DeveloperEdition
+        await self.add_cog(DeveloperEdition(self))
         from community_social import CommunitySocial, SocialView
         await self.add_cog(CommunitySocial(self))
         for r in self.store.all("SELECT * FROM community_posts WHERE closed=0"):
