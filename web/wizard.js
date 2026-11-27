@@ -74,8 +74,33 @@ function renderThemes() {
   }
 }
 
+function renderVoice(g) {
+  const v=g?.voice_welcome;
+  $('voice-connection').textContent=!v?'—':!v.configured?'NOT CONFIGURED':
+    !v.channel_available?'ROOM UNAVAILABLE':v.connected?'BOT IN ROOM':'NOT CONNECTED';
+  $('voice-connection').classList.toggle('connected',!!v?.connected);
+  $('voice-room').textContent=v?.channel_name|| (v?.configured?'Configured room':'No room selected');
+  $('voice-access').textContent=v?.can_manage
+    ? 'Owner / Administrator: use these commands in your Discord server.'
+    : 'Only the server owner or an Administrator may configure voice welcome.';
+  for(const button of document.querySelectorAll('[data-copy]')) button.disabled=!v?.can_manage;
+}
+function renderActivity() {
+  const g=guild(), query=$('activity-filter').value.trim().toLowerCase();
+  const events=(g?.activity||[]).filter(e=>String(e.kind+' '+e.detail).toLowerCase().includes(query));
+  $('events').replaceChildren();
+  for(const event of events) {
+    const block=el('div');
+    block.append(el('b',event.kind),el('p',event.detail),
+                 el('small',new Date(event.at*1000).toLocaleString()));
+    $('events').append(block);
+  }
+  if(!events.length) $('events').append(el('p',query?'No matching recent events.':'No activity yet.'));
+}
 function renderGuild() {
   const g = guild();
+  $('activity-filter').value='';
+  renderVoice(g);
   if (!g) {
     $('guild-name').textContent='No server available';
     $('stats').replaceChildren();
@@ -108,20 +133,14 @@ function renderGuild() {
     if (input.type==='checkbox') input.checked=!!value;
     else input.value=String(value ?? '');
   }
-  $('events').replaceChildren();
-  for(const event of g.activity) {
-    const block=el('div');
-    block.append(el('b',event.kind),el('p',event.detail),
-                 el('small',new Date(event.at*1000).toLocaleString()));
-    $('events').append(block);
-  }
-  if (!g.activity.length) $('events').append(el('p','No activity yet.'));
+  renderActivity();
   resetPreview();
 }
 
 async function refresh(preserve=true) {
   const data=await api('/api/v2/bootstrap');
   available=data.guilds;
+  $('last-refresh').textContent='Updated '+new Date().toLocaleTimeString();
   csrf=data.csrf||'';
   $('actor').textContent=data.actor;
   $('gate').hidden=true;
@@ -308,6 +327,20 @@ $('guild').addEventListener('change',()=>{
   renderGuild();
   message('');
 });
+$('activity-filter').addEventListener('input',renderActivity);
+$('refresh-dashboard').addEventListener('click',async()=>{
+  if(!window.confirm('Refresh server data? Unsaved changes and the current setup preview will be cleared.'))return;
+  $('refresh-dashboard').disabled=true;
+  try{await refresh();message('Server data refreshed.',true);}
+  catch(error){message(error.message);}
+  finally{$('refresh-dashboard').disabled=false;}
+});
+for(const button of document.querySelectorAll('[data-copy]')){
+  button.addEventListener('click',async()=>{
+    try{await navigator.clipboard.writeText(button.dataset.copy);message('Command copied. Run it in Discord.',true);}
+    catch(error){message('Copy manually: '+button.dataset.copy);}
+  });
+}
 $('focus').addEventListener('change',resetPreview);
 $('preview').addEventListener('click',preview);
 $('reset-preview').addEventListener('click',()=>{resetPreview();message('');});
