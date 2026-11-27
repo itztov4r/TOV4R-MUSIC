@@ -260,6 +260,22 @@ class DashboardV2:
             raise web.HTTPBadRequest(text="JSON object required")
         return data
 
+    @staticmethod
+    def voice_status(guild, cfg, can_manage):
+        """Report current welcome configuration and actual voice connection, not an uptime claim."""
+        channel_id = cfg.get("voice_welcome_channel", 0)
+        channel = guild.get_channel(channel_id) if channel_id else None
+        voice = getattr(guild, "voice_client", None)
+        connected = bool(channel and voice and voice.is_connected()
+                         and voice.channel == channel)
+        return {
+            "configured": bool(channel_id),
+            "channel_available": channel is not None,
+            "connected": connected,
+            "channel_name": channel.name if channel and can_manage else None,
+            "can_manage": bool(can_manage),
+        }
+
     async def bootstrap(self, request):
         principal = self._principal(request)
         guilds = await self._admin_guilds(principal)
@@ -276,6 +292,7 @@ class DashboardV2:
                     self._can_setup(principal, guild) and guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
+                "voice_welcome": self.voice_status(guild, cfg, self._can_setup(principal, guild)),
                 "open_rooms": self.bot.store.one("SELECT COUNT(*) n FROM rooms WHERE guild=?", (guild.id,))["n"],
                 "open_tickets": self.bot.store.one("SELECT COUNT(*) n FROM tickets WHERE guild=? AND closed=0", (guild.id,))["n"],
                 "can_manage_ai": principal["sid"] is None or str(guild.owner_id) == principal["actor"],
