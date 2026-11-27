@@ -266,7 +266,7 @@ class Community(commands.Bot):
                     cat=member.guild.get_channel(cfg['voice_category'])
                     if not isinstance(cat,discord.CategoryChannel): return
                     overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=None if gate_active(self,member.guild.id) else True,connect=True),
-                                member.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,manage_channels=True,move_members=True),
+                                member.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,manage_channels=True,move_members=True,send_messages=True,embed_links=True,read_message_history=True),
                                 member:discord.PermissionOverwrite(view_channel=True,connect=True)}
                     channel=None
                     try:
@@ -276,6 +276,19 @@ class Community(commands.Bot):
                         channel=await member.guild.create_voice_channel(name,category=cat,user_limit=limit,overwrites=overwrites,reason='TOV4R Join to Create')
                         self.store.run('INSERT INTO rooms VALUES(?,?,?)',(channel.id,member.guild.id,member.id))
                         await member.move_to(channel)
+                        # Each new temporary voice channel has its own text chat controls.
+                        # A failed panel delivery must not delete a successfully created room.
+                        try:
+                            panel=embed('🔊 TOV4R • TAB Control Panel',
+                                        f'Owner: <@{member.id}>\n'
+                                        'Manage this temporary voice room using the buttons below.')
+                            panel.add_field(name='🔒 Access',value='Lock / Unlock • Hide / Show',inline=False)
+                            panel.add_field(name='⚙️ Room settings',value='Rename • Limit • Permit • Transfer • Claim',inline=False)
+                            panel.add_field(name='💾 Preferences',value='Room info • Save room • Reset saved',inline=False)
+                            await channel.send(embed=panel,view=VoicePanel(self,member.guild.id),
+                                               allowed_mentions=discord.AllowedMentions.none())
+                        except discord.HTTPException:
+                            log.warning('Voice room %s created, but its chat panel could not be delivered',channel.id,exc_info=True)
                         await self.audit(member.guild,'Voice created',f'{channel.name} • Owner {member.id}')
                     except discord.HTTPException:
                         log.exception('Voice creation failed')
@@ -421,6 +434,8 @@ class ErrorView(discord.ui.View):
 async def owned_room(bot,i):
     c=i.user.voice.channel if isinstance(i.user,discord.Member) and i.user.voice else None
     r=bot.store.one('SELECT * FROM rooms WHERE channel=?',(c.id,)) if c else None
+    if isinstance(i.channel,discord.VoiceChannel) and i.channel!=c:
+        raise ValueError('Join this voice room to use its controls.')
     if not r or r['owner']!=i.user.id: raise ValueError('Khassek tkon f room dyalek.')
     return c,r
 
@@ -521,6 +536,8 @@ class VoicePanel(ErrorView):
                 if not i.guild or not isinstance(i.user,discord.Member):
                     return await reply(i,'Use this panel in a server.')
                 channel=i.user.voice.channel if i.user.voice else None
+                if isinstance(i.channel,discord.VoiceChannel) and i.channel!=channel:
+                    return await reply(i,'Join this voice room to use its controls.')
                 async with bot.locks[('room',channel.id if channel else i.user.id)]:
                     await handler(i)
             b.callback=callback; self.add_item(b)
