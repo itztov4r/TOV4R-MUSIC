@@ -9,7 +9,7 @@ Release candidate V5.0. This notice describes the implementation, not a verified
 - Support tickets can retain text transcripts (up to 500 messages and 1 MB, no attachment contents) for seven days after closing if saved. Authorized staff can export copies; exported copies are outside bot storage.
 - Server backups contain structure, permissions and settings, not messages; up to five backups per server are kept.
 - Dashboard sign-in uses Discord OAuth identify and guilds. Access tokens are held server-side in memory for a session of at most one hour, with an HttpOnly cookie and CSRF protection. Login states and setup previews expire after ten minutes.
-- Optional AI administration sends the explicit owner request to OpenAI with storage disabled in the API request; this does not establish that the provider never retains data. It does not send ticket transcripts or server message history automatically. Do not submit personal or confidential information.
+- Optional AI Q&A (/ai) sends the member's explicit question to OpenAI; separate owner-only administration (/ai_admin) sends the explicit owner request to OpenAI with storage disabled in the API request; this does not establish that the provider never retains data. It does not send ticket transcripts or server message history automatically. Do not submit personal or confidential information. AI requires the owner's server opt-in; replies are private to the requesting member in Discord.
 - Railway hosts the bot and its SQLite volume; Discord and the optional AI provider process data as part of service operation.
 
 ## Access, retention and user requests
