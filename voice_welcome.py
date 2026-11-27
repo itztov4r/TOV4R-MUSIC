@@ -84,34 +84,19 @@ class VoiceWelcome(commands.Cog):
         async with self.audio_lock:
             if self.audio.is_file() and 0 < self.audio.stat().st_size <= MAX_AUDIO:
                 return
-            key = os.getenv("OPENAI_API_KEY", "").strip()
-            if not key:
-                raise ValueError("OpenAI API key is not configured.")
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-                async with session.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers={"Authorization": "Bearer " + key},
-                    json={"model": "gpt-4o-mini-tts", "voice": "coral", "input": GREETING,
-                          "instructions": "Speak naturally in Moroccan Darija, friendly and clear.",
-                          "response_format": "mp3"},
-                ) as response:
-                    if response.status != 200:
-                        raise ValueError(f"Voice generation unavailable (HTTP {response.status}).")
-                    data = bytearray()
-                    async for chunk in response.content.iter_chunked(65536):
-                        data.extend(chunk)
-                        if len(data) > MAX_AUDIO:
-                            raise ValueError("Generated audio exceeds the allowed size.")
-            if not data:
-                raise ValueError("Empty voice response.")
+            # A fixed, locally synthesized clip is bundled with the container.
+            # No per-join network call, quota or paid speech API is necessary.
+            bundled = Path(__file__).resolve().parent / "welcome-offline.mp3"
+            if not bundled.is_file() or not 0 < bundled.stat().st_size <= MAX_AUDIO:
+                raise ValueError("Offline welcome clip is missing or invalid.")
             self.audio.parent.mkdir(parents=True, exist_ok=True)
             temp = self.audio.with_suffix(".tmp")
-            temp.write_bytes(data)
+            temp.write_bytes(bundled.read_bytes())
             temp.replace(self.audio)
 
-    @welcome.command(name="setup", description="Enable greeting in one voice room; first generation may incur API cost")
+    @welcome.command(name="setup", description="Enable free offline greeting in one voice room")
     @app_commands.guild_only()
-    @app_commands.describe(channel="Voice channel to greet in", confirm="Approve one-time AI audio generation")
+    @app_commands.describe(channel="Voice channel to greet in", confirm="Confirm automatic playback in this room")
     async def setup(self, i: discord.Interaction, channel: discord.VoiceChannel, confirm: bool = False):
         if i.user.id != i.guild.owner_id:
             return await i.response.send_message("Server owner only.", ephemeral=True)
@@ -122,7 +107,7 @@ class VoiceWelcome(commands.Cog):
         if not perms or not all((perms.view_channel, perms.connect, perms.speak)):
             return await i.response.send_message("Bot needs View Channel, Connect and Speak in that room.", ephemeral=True)
         if not confirm:
-            return await i.response.send_message("Preview: the bot stays in this voice room even when empty and plays a fixed Darija AI-generated greeting on entry. No member audio or names are sent to the provider. First generation may incur a small API charge. Run again with confirm=True to enable.", ephemeral=True)
+            return await i.response.send_message("Preview: the bot stays in this voice room even when empty and plays a fixed locally synthesized Arabic greeting on entry. No member audio is recorded and no speech API is required. Run again with confirm=True to enable.", ephemeral=True)
         await i.response.defer(ephemeral=True, thinking=True)
         try:
             await self.prepare()
