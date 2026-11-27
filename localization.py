@@ -496,7 +496,7 @@ STRINGS.update({
     "Bot khaso View Channel, Connect w Speak f had room."
   ],
   "vw_preview": [
-    "Preview: the bot stays in this voice room even when empty and plays a fixed locally synthesized Arabic greeting on entry. No member audio is recorded and no speech API is required. Run again with confirm=True to enable.",
+    "Preview: the bot stays in this voice room even when empty and plays the custom recording or default Darija greeting on entry. No member audio is recorded and no speech API is required. Run again with confirm=True to enable.",
     "Aperçu : le bot reste dans le salon même vide et joue le fichier d'accueil (personnalisé ou par défaut en darija) à l'arrivée. Aucun enregistrement des membres ni API vocale. Relancez avec confirm=True pour activer.",
     "Preview: bot kayb9a f room 7ta ila khawi, w kaychghl audio d'accueil (personnalisé wla Darija par défaut) mlli chi membre ydkhel. Ma kayrecordich sot dyal membres. Dir confirm=True bach tactivih."
   ],
@@ -574,3 +574,10 @@ def translate(language,key,**values):
 def tr(bot,guild_id,key,**values):
     language=bot.store.config(guild_id).get("language","en") if guild_id else "en"
     return translate(language,key,**values)
+
+
+def interaction_text(bot, interaction, key, **values):
+    guild_id = getattr(interaction, "guild_id", None) or getattr(getattr(interaction, "guild", None), "id", None)
+    if guild_id and getattr(bot, "store", None) is not None:
+        return tr(bot, guild_id, key, **values)
+    return translate("en", key, **values)
