@@ -346,6 +346,19 @@ class DashboardV2:
         self.bot.store.event(guild.id, "Web voice welcome", "Default audio restored by " + principal["actor"])
         return web.json_response({"ok": True, "message": "Default greeting restored."})
 
+    def security_status(self, guild, cfg):
+        enabled = bool(cfg.get("security_enabled"))
+        monitor = getattr(self.bot, "security", None)
+        state = monitor.snapshot(guild.id) if enabled and monitor else {
+            "paused": False, "recent_alert_types": 0
+        }
+        return {
+            "enabled": enabled,
+            "audit_available": bool(guild.me and guild.me.guild_permissions.view_audit_log),
+            "paused": state["paused"],
+            "recent_alert_types": state["recent_alert_types"],
+        }
+
     async def bootstrap(self, request):
         principal = self._principal(request)
         guilds = await self._admin_guilds(principal)
@@ -363,6 +376,7 @@ class DashboardV2:
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
                 "voice_welcome": self.voice_status(guild, cfg, self._can_setup(principal, guild)),
+                "security_status": self.security_status(guild, cfg),
                 "open_rooms": self.bot.store.one("SELECT COUNT(*) n FROM rooms WHERE guild=?", (guild.id,))["n"],
                 "open_tickets": self.bot.store.one("SELECT COUNT(*) n FROM tickets WHERE guild=? AND closed=0", (guild.id,))["n"],
                 "can_manage_ai": principal["sid"] is None or str(guild.owner_id) == principal["actor"],
