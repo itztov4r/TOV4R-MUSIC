@@ -303,9 +303,9 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
         from pathlib import Path
         import tempfile
-        self.assertEqual(MAX_WELCOME_SECONDS, 60)
+        self.assertEqual(MAX_WELCOME_SECONDS, 300)
         self.assertGreaterEqual(PLAYBACK_TIMEOUT, MAX_WELCOME_SECONDS + 10)
-        self.assertEqual(MAX_AUDIO, 12_000_000)
+        self.assertEqual(MAX_AUDIO, 64_000_000)
         cog = VoiceWelcome(SimpleNamespace())
         with tempfile.TemporaryDirectory() as root:
             cog.audio = Path(root) / "welcome.mp3"
@@ -314,10 +314,10 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
                 user=SimpleNamespace(id=1),
                 response=SimpleNamespace(defer=AsyncMock()),
                 followup=SimpleNamespace(send=AsyncMock()))
-            file = SimpleNamespace(filename="intro.mp3", size=3_000_000,
-                                   read=AsyncMock(return_value=b"x" * 3_000_000))
+            file = SimpleNamespace(filename="intro.mp3", size=13_000_000,
+                                   read=AsyncMock(return_value=b"x" * 13_000_000))
             async def convert(*args, **kwargs):
-                self.assertEqual(args[args.index("-t") + 1], "60")
+                self.assertEqual(args[args.index("-t") + 1], "300")
                 Path(args[-1]).write_bytes(b"converted audio")
                 return SimpleNamespace(wait=AsyncMock(), returncode=0)
             with patch("voice_welcome.asyncio.create_subprocess_exec", side_effect=convert) as process:
@@ -325,7 +325,37 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
                 process.assert_awaited_once()
             self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted audio")
             self.assertFalse(cog.custom_audio(456).exists())
-            self.assertIn("60 seconds", i.followup.send.await_args.args[0])
+            self.assertIn("5 minutes", i.followup.send.await_args.args[0])
+
+
+    async def test_off_interrupts_own_long_playback_before_lock(self):
+        import asyncio
+        from collections import defaultdict
+        from unittest.mock import Mock
+        from voice_welcome import VoiceWelcome
+        store = SimpleNamespace(update=Mock())
+        locks = defaultdict(asyncio.Lock)
+        cog = VoiceWelcome(SimpleNamespace(store=store, locks=locks))
+        client = Mock()
+        client.is_playing.return_value = True
+        client.disconnect = AsyncMock()
+        guild = SimpleNamespace(owner_id=1, voice_client=client)
+        cog.clients[123] = client
+        i = SimpleNamespace(guild=guild, guild_id=123,
+            user=SimpleNamespace(id=1),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()))
+        lock = locks[("voice_welcome", 123)]
+        await lock.acquire()
+        task = asyncio.create_task(cog.off.callback(cog, i))
+        try:
+            await asyncio.sleep(0)
+            client.stop.assert_called_once()
+            store.update.assert_called_with(123, {"voice_welcome_channel": 0})
+        finally:
+            lock.release()
+            await task
+        client.disconnect.assert_awaited_once_with(force=True)
 
 
 if __name__ == "__main__":
