@@ -113,6 +113,18 @@ class VoiceWelcome(commands.Cog):
         custom = self.custom_audio(guild_id)
         return custom if custom.is_file() and 0 < custom.stat().st_size <= MAX_ENCODED_AUDIO else self.audio
 
+    async def convert_audio(self, source, output, fmt):
+        proc = await asyncio.create_subprocess_exec('ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-f', fmt, '-i', str(source), '-map', '0:a:0', '-vn', '-t', str(MAX_WELCOME_SECONDS), '-af', 'loudnorm=I=-18:TP=-2:LRA=7', '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-y', str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=120)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
+        if proc.returncode or not output.is_file() or not 0 < output.stat().st_size <= MAX_ENCODED_AUDIO:
+            raise ValueError('Audio conversion failed')
+
     @welcome.command(name='audio', description='Upload a custom welcome recording (max 64 MB, first 5 minutes)')
     @app_commands.guild_only()
     async def upload_audio(self, i: discord.Interaction, file: discord.Attachment):
@@ -134,15 +146,7 @@ class VoiceWelcome(commands.Cog):
                     source = Path(tmp) / 'input'
                     output = Path(tmp) / 'welcome.ogg'
                     source.write_bytes(data)
-                    proc = await asyncio.create_subprocess_exec('ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-f', fmt, '-i', str(source), '-map', '0:a:0', '-vn', '-t', str(MAX_WELCOME_SECONDS), '-af', 'loudnorm=I=-18:TP=-2:LRA=7', '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-y', str(output), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=120)
-                    except asyncio.TimeoutError:
-                        proc.kill()
-                        await proc.wait()
-                        raise
-                    if proc.returncode or not output.is_file() or not 0 < output.stat().st_size <= MAX_ENCODED_AUDIO:
-                        raise ValueError('Audio conversion failed')
+                    await self.convert_audio(source, output, fmt)
                     output.replace(target)
         except (ValueError, OSError, discord.DiscordException, asyncio.TimeoutError, aiohttp.ClientError):
             return await i.followup.send('Invalid audio or conversion failed. Existing greeting unchanged.', ephemeral=True)
