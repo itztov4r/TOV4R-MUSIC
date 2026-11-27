@@ -110,6 +110,15 @@ function renderVoice(g) {
   $('voice-consent').checked=false;
   for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=voiceBusy||!v?.can_manage;
 }
+function renderSecurity(g) {
+  const state=g?.security_status;
+  const lang=guildLanguage(g);
+  const t=(en,fr,da)=>({en,fr,darija:da}[lang]);
+  $('security-monitoring').textContent=!state?'—':state.enabled?t('Enabled','Activée','Activé'):t('Disabled','Désactivée','Ttfa');
+  $('security-audit').textContent=!state?'—':state.audit_available?t('Available','Disponible','Kayna'):t('Missing permission','Permission manquante','Permission na9sa');
+  $('security-pause').textContent=!state?'—':state.paused?t('Active — review manually','Active — vérifier manuellement','Active — khass review'):t('Inactive','Inactive','Inactive');
+  $('security-alert-types').textContent=state?String(state.recent_alert_types):'—';
+}
 function renderActivity() {
   const g=guild(), query=$('activity-filter').value.trim().toLowerCase();
   const events=(g?.activity||[]).filter(e=>String(e.kind+' '+e.detail).toLowerCase().includes(query));
@@ -127,6 +136,7 @@ function renderGuild() {
   $('activity-filter').value='';
   localizeDashboard(g);
   renderVoice(g);
+  renderSecurity(g);
   if (!g) {
     $('guild-name').textContent='No server available';
     $('stats').replaceChildren();
