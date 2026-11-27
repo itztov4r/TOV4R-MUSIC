@@ -358,5 +358,24 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         client.disconnect.assert_awaited_once_with(force=True)
 
 
+class DashboardV3Tests(unittest.TestCase):
+    def test_voice_status_is_actual_and_permission_scoped(self):
+        from web_dashboard_v2 import DashboardV2
+        from unittest.mock import Mock
+        channel = SimpleNamespace(id=123, name="Private welcome")
+        voice = Mock()
+        voice.is_connected.return_value = True
+        voice.channel = channel
+        guild = SimpleNamespace(get_channel=lambda cid: channel if cid == 123 else None, voice_client=voice)
+        cfg = {"voice_welcome_channel": 123}
+        self.assertTrue(DashboardV2.voice_status(guild, cfg, True)["connected"])
+        self.assertEqual(DashboardV2.voice_status(guild, cfg, True)["channel_name"], channel.name)
+        self.assertIsNone(DashboardV2.voice_status(guild, cfg, False)["channel_name"])
+        voice.channel = SimpleNamespace(id=456)
+        self.assertFalse(DashboardV2.voice_status(guild, cfg, True)["connected"])
+        self.assertFalse(DashboardV2.voice_status(guild, {}, True)["configured"])
+        self.assertFalse(DashboardV2.voice_status(guild, {"voice_welcome_channel": 789}, True)["channel_available"])
+
+
 if __name__ == "__main__":
     unittest.main()
