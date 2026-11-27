@@ -113,5 +113,76 @@ class ModuleReleaseTests(unittest.IsolatedAsyncioTestCase):
             await service.settings(SimpleNamespace())
 
 
+class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_entry_into_selected_room(self):
+        from unittest.mock import Mock
+        from voice_welcome import should_greet
+        room = Mock(spec=discord.VoiceChannel)
+        room.id = 123
+        other = SimpleNamespace(id=456)
+        human = SimpleNamespace(bot=False)
+        before = SimpleNamespace(channel=other)
+        after = SimpleNamespace(channel=room)
+        self.assertTrue(should_greet(human, before, after, 123))
+        self.assertFalse(should_greet(human, before, after, 456))
+        self.assertFalse(should_greet(human, after, after, 123))
+        self.assertFalse(should_greet(SimpleNamespace(bot=True), before, after, 123))
+        self.assertFalse(should_greet(human, after, SimpleNamespace(channel=None), 123))
+        self.assertFalse(should_greet(human, before, after, 0))
+
+    async def test_voice_welcome_commands_register(self):
+        from voice_welcome import VoiceWelcome
+        bot = commands.Bot(command_prefix=".", intents=discord.Intents.none())
+        try:
+            await bot.add_cog(VoiceWelcome(bot))
+            group = bot.tree.get_command("voicewelcome")
+            self.assertEqual({c.name for c in group.commands}, {"setup", "off"})
+        finally:
+            await bot.close()
+
+    async def test_existing_cached_audio_does_not_call_provider(self):
+        from voice_welcome import VoiceWelcome
+        from pathlib import Path
+        from unittest.mock import patch
+        import tempfile
+        cog = VoiceWelcome(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "welcome.mp3"
+            cog.audio.write_bytes(b"test cache")
+            with patch("voice_welcome.aiohttp.ClientSession") as session:
+                await cog.prepare()
+                session.assert_not_called()
+
+
+    async def test_persistent_connection_reused_after_greeting(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cog = VoiceWelcome(SimpleNamespace())
+        channel = Mock()
+        channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
+        client = Mock()
+        client.is_connected.return_value = True
+        client.channel = channel
+        client.disconnect = AsyncMock()
+        guild = SimpleNamespace(id=123, me=object(), voice_client=client)
+        cog.clients[guild.id] = client
+        self.assertIs(await cog.ensure_connection(guild, channel), client)
+        client.disconnect.assert_not_awaited()
+
+    async def test_empty_voice_room_connects_and_stays(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cog = VoiceWelcome(SimpleNamespace())
+        channel = Mock()
+        channel.members = []
+        channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
+        client = Mock()
+        channel.connect = AsyncMock(return_value=client)
+        guild = SimpleNamespace(id=123, me=object(), voice_client=None)
+        self.assertIs(await cog.ensure_connection(guild, channel), client)
+        self.assertIs(cog.clients[guild.id], client)
+        channel.connect.assert_awaited_once_with(timeout=15, reconnect=True, self_deaf=True)
+
+
 if __name__ == "__main__":
     unittest.main()

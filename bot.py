@@ -101,6 +101,8 @@ class Community(commands.Bot):
         self.add_view(TicketReopen(self))
         from voice_commands import VoiceCommands
         await self.add_cog(VoiceCommands(self))
+        from voice_welcome import VoiceWelcome
+        await self.add_cog(VoiceWelcome(self))
         from server_manager import ServerManager
         await self.add_cog(ServerManager(self))
         from autopilot import ServerAutopilot
