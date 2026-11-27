@@ -458,6 +458,115 @@ STRINGS = {
   ]
 }
 
+# Voice Welcome and member AI messages.
+STRINGS.update({
+  "vw_owner": [
+    "Server owner or Administrator only.",
+    "Réservé au propriétaire ou à un administrateur.",
+    "Ghir Owner wla Administrator."
+  ],
+  "vw_format": [
+    "Upload MP3, WAV, OGG or M4A, up to 64 MB (subject to Discord upload limits; first 5 minutes). Use only audio you have permission to play.",
+    "Envoyez un MP3, WAV, OGG ou M4A (64 Mo maximum selon Discord, 5 premières minutes). Utilisez uniquement un audio que vous êtes autorisé à diffuser.",
+    "Sift MP3, WAV, OGG wla M4A (64 MB max 3la 7sab Discord, awel 5 d9aye9). Sta3mel ghir audio li 3ndek l7e9 tchghlo."
+  ],
+  "vw_failed": [
+    "Invalid audio or conversion failed. Existing greeting unchanged.",
+    "Audio invalide ou conversion échouée. L'ancien accueil reste inchangé.",
+    "Audio ma sale7ch wla conversion fchlat. Sot l9dim ba9i."
+  ],
+  "vw_saved": [
+    "Custom welcome saved for this server. Audio is normalized and converted to Opus (first 5 minutes). Existing voice room settings are unchanged.",
+    "Accueil personnalisé enregistré pour ce serveur. Audio normalisé et converti en Opus (5 premières minutes). Salon inchangé.",
+    "Sot jdid t7fed f had serveur, converti l Opus (awel 5 d9aye9). Room ba9i kif ma kan."
+  ],
+  "vw_reset": [
+    "Default greeting restored.",
+    "Accueil par défaut restauré.",
+    "Sot l asli rje3."
+  ],
+  "vw_room": [
+    "Choose a normal voice room, not the TAB creator.",
+    "Choisissez un salon vocal normal, pas le créateur de TAB.",
+    "Khtar room vocal 3adi, machi TAB creator."
+  ],
+  "vw_permissions": [
+    "Bot needs View Channel, Connect and Speak in that room.",
+    "Le bot a besoin des permissions Voir le salon, Se connecter et Parler.",
+    "Bot khaso View Channel, Connect w Speak f had room."
+  ],
+  "vw_preview": [
+    "Preview: the bot stays in this voice room even when empty and plays a fixed locally synthesized Arabic greeting on entry. No member audio is recorded and no speech API is required. Run again with confirm=True to enable.",
+    "Aperçu : le bot reste dans le salon même vide et joue le fichier d'accueil (personnalisé ou par défaut en darija) à l'arrivée. Aucun enregistrement des membres ni API vocale. Relancez avec confirm=True pour activer.",
+    "Preview: bot kayb9a f room 7ta ila khawi, w kaychghl audio d'accueil (personnalisé wla Darija par défaut) mlli chi membre ydkhel. Ma kayrecordich sot dyal membres. Dir confirm=True bach tactivih."
+  ],
+  "vw_prepare": [
+    "Voice generation failed; existing settings unchanged.",
+    "Préparation audio échouée ; paramètres inchangés.",
+    "Audio ma twjje dech; settings ba9yin kif ma kano."
+  ],
+  "vw_connected": [
+    "Connected; the bot stays in the room even when empty.",
+    "Connecté ; le bot reste dans le salon même vide.",
+    "Bot connecté w kayb9a f room 7ta ila khawi."
+  ],
+  "vw_pending": [
+    "Saved, but not connected yet. Check voice permissions or another active voice connection.",
+    "Enregistré, mais pas encore connecté. Vérifiez les permissions vocales ou une autre connexion active.",
+    "Settings t7fdo, walakin bot mazal ma connectéch. Chouf permissions wla connexion vocal okhra."
+  ],
+  "vw_enabled": [
+    "Voice welcome enabled in {channel}. {status} Playback only; no recording.",
+    "Accueil vocal activé dans {channel}. {status} Lecture uniquement, sans enregistrement.",
+    "Voice Welcome activé f {channel}. {status} Ghir lecture, bla enregistrement."
+  ],
+  "vw_disconnect": [
+    "Disabled; voice disconnect could not be verified.",
+    "Désactivé ; déconnexion vocale non vérifiée.",
+    "Ttfa, walakin déconnexion mazal ma tverifyatch."
+  ],
+  "vw_off": [
+    "Voice welcome disabled.",
+    "Accueil vocal désactivé.",
+    "Voice Welcome ttfa."
+  ],
+  "ai_unavailable": [
+    "AI is unavailable here. The owner must enable it and configure the provider.",
+    "IA indisponible ici. Le propriétaire doit l'activer et configurer le fournisseur.",
+    "AI ma khdamch hna. Owner khaso yactivih w yconfiguri API."
+  ],
+  "ai_question": [
+    "Enter a clear question (500 characters maximum).",
+    "Saisissez une question claire (500 caractères maximum).",
+    "Kteb so2al wade7 (500 7arf max)."
+  ],
+  "ai_quota": [
+    "AI request limit reached. Try again later.",
+    "Limite de requêtes IA atteinte. Réessayez plus tard.",
+    "Wselti l limite dyal AI. 3awd mn b3d."
+  ],
+  "ai_pending": [
+    "Previous question still processing.",
+    "La question précédente est encore en cours.",
+    "So2al li 9bel mazal kayttraita."
+  ],
+  "ai_context": [
+    "Context: last exchange in RAM for 10 min. /ai_clear removes it.",
+    "Contexte : dernier échange en mémoire vive pendant 10 min. /ai_clear l'efface.",
+    "Contexte: akher so2al w jawab f RAM 10 d9aye9. /ai_clear kaymse7hom."
+  ],
+  "ai_clear": [
+    "Bot-side context cleared. This does not delete provider records or Discord messages.",
+    "Contexte du bot effacé. Les données du fournisseur et les messages Discord ne sont pas supprimés.",
+    "Contexte dyal bot tmse7. Hadchi ma kaymse7ch données dyal fournisseur wla messages Discord."
+  ],
+  "ai_failed": [
+    "AI temporarily unavailable.",
+    "IA temporairement indisponible.",
+    "AI ma khdamch daba."
+  ]
+})
+
 def translate(language,key,**values):
     idx=LANGUAGES.index(language) if language in LANGUAGES else 0
     return STRINGS[key][idx].format(**values)
