@@ -8,6 +8,7 @@ let available = [];
 let previewToken = '';
 let choice = 'gaming';
 let meta = null;
+let voiceBusy = false;
 const $ = id => document.getElementById(id);
 const icons = {movies:'🎬',gaming:'🎮',music:'🎵',anime:'🌸',
                study:'📚',tech:'💻',sports:'⚽',friends:'👋',community:'🌐'};
@@ -31,6 +32,7 @@ async function api(path, options={}) {
   const headers = {};
   if (ownerKey) headers.Authorization = 'Bearer ' + ownerKey;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  Object.assign(headers,options.headers||{});
   if (csrf && options.method && options.method !== 'GET') {
     headers['X-CSRF-Token'] = csrf;
   }
@@ -84,6 +86,10 @@ function renderVoice(g) {
     ? 'Owner / Administrator: use these commands in your Discord server.'
     : 'Only the server owner or an Administrator may configure voice welcome.';
   for(const button of document.querySelectorAll('[data-copy]')) button.disabled=!v?.can_manage;
+  $('voice-upload-form').hidden=!v?.can_manage;
+  $('voice-file').value='';
+  $('voice-consent').checked=false;
+  for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=voiceBusy||!v?.can_manage;
 }
 function renderActivity() {
   const g=guild(), query=$('activity-filter').value.trim().toLowerCase();
@@ -327,6 +333,34 @@ $('guild').addEventListener('change',()=>{
   renderGuild();
   message('');
 });
+async function changeVoiceAudio(reset=false) {
+  const g=guild();
+  if(!g?.voice_welcome?.can_manage||voiceBusy)return;
+  const file=$('voice-file').files[0];
+  const extension=file?.name.match(/\.[^.]+$/)?.[0]?.toLowerCase();
+  if(!reset && (!file||!['.mp3','.wav','.ogg','.m4a'].includes(extension)||file.size<1||file.size>64000000||!$('voice-consent').checked)){
+    return message('Select an authorized MP3, WAV, OGG or M4A file of up to 64 MB.');
+  }
+  if(!window.confirm((reset?'Restore the default welcome for ':'Replace the welcome recording for ')+g.name+'?'))return;
+  voiceBusy=true;
+  for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=true;
+  message(reset?'Restoring default greeting…':'Uploading and converting audio…');
+  try {
+    const path='/api/v2/guild/'+encodeURIComponent(g.id)+'/voice/audio';
+    const result=await api(path,reset?{method:'DELETE'}:{
+      method:'PUT',body:file,headers:{'Content-Type':'application/octet-stream','X-Audio-Extension':extension,'X-Audio-Consent':'yes'}
+    });
+    message(g.name+': '+result.message,true);
+    $('voice-file').value='';
+    $('voice-consent').checked=false;
+  }catch(error){message(error.message);}
+  finally{
+    voiceBusy=false;
+    for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=!guild()?.voice_welcome?.can_manage;
+  }
+}
+$('voice-upload-form').addEventListener('submit',event=>{event.preventDefault();changeVoiceAudio();});
+$('voice-reset').addEventListener('click',()=>changeVoiceAudio(true));
 $('activity-filter').addEventListener('input',renderActivity);
 $('refresh-dashboard').addEventListener('click',async()=>{
   if(!window.confirm('Refresh server data? Unsaved changes and the current setup preview will be cleared.'))return;
