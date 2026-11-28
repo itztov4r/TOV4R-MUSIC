@@ -14,6 +14,8 @@ class SecurityMonitor:
         q=self.events[key]
         q.append(now)
         while q and now-q[0]>window: q.popleft()
+        # Keep only enough timestamps to detect the threshold; no member IDs stored.
+        while len(q)>limit: q.popleft()
         if len(q)<limit: return False
         if kind=='join': self.raid_until[guild]=now+120
         if now-self.alerted.get(key,float('-inf'))<60: return False
@@ -22,6 +24,14 @@ class SecurityMonitor:
     def paused(self,guild,now=None):
         now=time.monotonic() if now is None else now
         return self.raid_until.get(guild,0)>now
+    def snapshot(self,guild,now=None):
+        """Read-only aggregate state; counts are deliberately bounded."""
+        now=time.monotonic() if now is None else now
+        return {
+            "paused": self.paused(guild,now),
+            "recent_alert_types": sum(1 for (gid,_), at in self.alerted.items()
+                                      if gid==guild and 0<=now-at<=120),
+        }
     def clear(self,guild):
         for mapping in (self.events,self.alerted):
             for key in list(mapping):

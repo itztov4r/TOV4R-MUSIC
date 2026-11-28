@@ -8,6 +8,8 @@ Requires DISCORD_OAUTH_CLIENT_SECRET and DASHBOARD_BASE_URL for OAuth.
 """
 from __future__ import annotations
 
+import asyncio
+import tempfile
 import hashlib
 import hmac
 import json
@@ -30,6 +32,7 @@ from setup_service import SETUP_ROLES, setup_role
 from unified_setup import provision_all as provision_server
 from level_rewards import TIERS, reward_role
 from store import validate_config
+from voice_welcome import MAX_AUDIO
 
 LOG = logging.getLogger("tov4r.dashboard")
 API = "https://discord.com/api/v10"
@@ -74,6 +77,8 @@ class DashboardV2:
         app.router.add_post("/api/v2/guild/{guild}/apply", self.apply)
         app.router.add_put("/api/v2/guild/{guild}/settings", self.settings)
         app.router.add_post("/api/v2/guild/{guild}/restore", self.restore)
+        app.router.add_put("/api/v2/guild/{guild}/voice/audio", self.voice_upload)
+        app.router.add_delete("/api/v2/guild/{guild}/voice/audio", self.voice_reset)
 
     @staticmethod
     def _new_id():
@@ -260,6 +265,100 @@ class DashboardV2:
             raise web.HTTPBadRequest(text="JSON object required")
         return data
 
+    @staticmethod
+    def voice_status(guild, cfg, can_manage):
+        """Report current welcome configuration and actual voice connection, not an uptime claim."""
+        channel_id = cfg.get("voice_welcome_channel", 0)
+        channel = guild.get_channel(channel_id) if channel_id else None
+        voice = getattr(guild, "voice_client", None)
+        connected = bool(channel and voice and voice.is_connected()
+                         and voice.channel == channel)
+        return {
+            "configured": bool(channel_id),
+            "channel_available": channel is not None,
+            "connected": connected,
+            "channel_name": channel.name if channel and can_manage else None,
+            "can_manage": bool(can_manage),
+        }
+
+    async def _voice_access(self, request):
+        principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text="Server owner or Administrator required")
+        cog = self.bot.get_cog("VoiceWelcome")
+        if cog is None:
+            raise web.HTTPServiceUnavailable(text="Voice welcome module unavailable")
+        return principal, guild, cog
+
+    async def _recheck_voice_access(self, request, expected_guild):
+        _, guild, _ = await self._voice_access(request)
+        if guild.id != expected_guild.id:
+            raise web.HTTPForbidden(text="Server mismatch")
+
+    async def voice_upload(self, request):
+        principal, guild, cog = await self._voice_access(request)
+        formats = {".mp3": "mp3", ".wav": "wav", ".ogg": "ogg", ".m4a": "mov"}
+        fmt = formats.get(request.headers.get("X-Audio-Extension", "").lower())
+        if request.content_type != "application/octet-stream" or not fmt:
+            raise web.HTTPUnsupportedMediaType(text="MP3, WAV, OGG or M4A required")
+        if request.headers.get("X-Audio-Consent") != "yes":
+            raise web.HTTPBadRequest(text="Confirm permission to play the recording")
+        if request.headers.get("Content-Encoding", "identity").lower() != "identity":
+            raise web.HTTPUnsupportedMediaType(text="Compressed request bodies are not supported")
+        size = request.content_length
+        if size is None or not 0 < size <= MAX_AUDIO:
+            raise web.HTTPBadRequest(text="File size must be between 1 byte and 64 MB")
+        if cog.audio_lock.locked():
+            raise web.HTTPConflict(text="Audio conversion busy; try again later")
+        try:
+            async with cog.audio_lock:
+                target = cog.custom_audio(guild.id)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=target.parent) as directory:
+                    source = Path(directory) / "input"
+                    output = Path(directory) / "welcome.ogg"
+                    async def receive():
+                        count = 0
+                        with source.open("wb") as stream:
+                            async for chunk in request.content.iter_chunked(65536):
+                                count += len(chunk)
+                                if count > size or count > MAX_AUDIO:
+                                    raise ValueError("Invalid size")
+                                stream.write(chunk)
+                        if count != size:
+                            raise ValueError("Incomplete audio upload")
+                    await asyncio.wait_for(receive(), timeout=90)
+                    await cog.convert_audio(source, output, fmt)
+                    await self._recheck_voice_access(request, guild)
+                    output.replace(target)
+        except (ValueError, OSError, asyncio.TimeoutError, aiohttp.ClientError):
+            raise web.HTTPBadRequest(text="Audio upload or conversion failed; existing recording unchanged")
+        self.bot.store.event(guild.id, "Web voice welcome", "Custom audio updated by " + principal["actor"])
+        return web.json_response({"ok": True, "message": "Custom recording saved (first 5 minutes). Existing room settings unchanged."})
+
+    async def voice_reset(self, request):
+        principal, guild, cog = await self._voice_access(request)
+        if cog.audio_lock.locked():
+            raise web.HTTPConflict(text="Audio conversion busy; try again later")
+        async with cog.audio_lock:
+            await self._recheck_voice_access(request, guild)
+            cog.custom_audio(guild.id).unlink(missing_ok=True)
+        self.bot.store.event(guild.id, "Web voice welcome", "Default audio restored by " + principal["actor"])
+        return web.json_response({"ok": True, "message": "Default greeting restored."})
+
+    def security_status(self, guild, cfg):
+        enabled = bool(cfg.get("security_enabled"))
+        monitor = getattr(self.bot, "security", None)
+        state = monitor.snapshot(guild.id) if enabled and monitor else {
+            "paused": False, "recent_alert_types": 0
+        }
+        return {
+            "enabled": enabled,
+            "audit_available": bool(guild.me and guild.me.guild_permissions.view_audit_log),
+            "paused": state["paused"],
+            "recent_alert_types": state["recent_alert_types"],
+        }
+
     async def bootstrap(self, request):
         principal = self._principal(request)
         guilds = await self._admin_guilds(principal)
@@ -276,6 +375,8 @@ class DashboardV2:
                     self._can_setup(principal, guild) and guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
+                "voice_welcome": self.voice_status(guild, cfg, self._can_setup(principal, guild)),
+                "security_status": self.security_status(guild, cfg),
                 "open_rooms": self.bot.store.one("SELECT COUNT(*) n FROM rooms WHERE guild=?", (guild.id,))["n"],
                 "open_tickets": self.bot.store.one("SELECT COUNT(*) n FROM tickets WHERE guild=? AND closed=0", (guild.id,))["n"],
                 "can_manage_ai": principal["sid"] is None or str(guild.owner_id) == principal["actor"],

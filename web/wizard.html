@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,12 +15,13 @@
     <a href="/wizard" class="brand" aria-label="TOV4R Server Studio">TOV4R <span>SERVER STUDIO</span></a>
     <p class="sidebar-sub">YOUR SERVER. YOUR STYLE.</p>
     <nav aria-label="Navigation principale">
-      <a href="#overview">◈ &nbsp; Overview</a>
-      <a href="#builder">✦ &nbsp; Setup Wizard</a>
-      <a href="#preferences">⚙ &nbsp; XP & Security</a>
-      <a href="#modules">🎫 &nbsp; Module Manager</a>
+      <a href="#overview">◈ &nbsp; <span data-lang-en="Overview" data-lang-fr="Aperçu" data-lang-darija="Overview">Overview</span></a>
+      <a href="#builder">✦ &nbsp; <span data-lang-en="Setup Wizard" data-lang-fr="Assistant de configuration" data-lang-darija="Setup Wizard">Setup Wizard</span></a>
+      <a href="#preferences">⚙ &nbsp; <span data-lang-en="XP &amp; Security" data-lang-fr="XP et sécurité" data-lang-darija="XP w sécurité">XP & Security</span></a>
+      <a href="#modules">🎫 &nbsp; <span data-lang-en="Module Manager" data-lang-fr="Gestion des modules" data-lang-darija="Gestion dyal modules">Module Manager</span></a>
       <a href="/status">↗ &nbsp; Public status &amp; guide</a>
-      <a href="#activity">◷ &nbsp; Activity</a>
+      <a href="#voice-status">♫ &nbsp; <span data-lang-en="Voice Welcome" data-lang-fr="Accueil vocal" data-lang-darija="Voice Welcome">Voice Welcome</span></a>
+      <a href="#activity">◷ &nbsp; <span data-lang-en="Activity" data-lang-fr="Activité" data-lang-darija="Activity">Activity</span></a>
     </nav>
     <div class="side-bottom">
       <span class="dot"></span><span id="bot-status">Connecting to TOV4R…</span>
@@ -29,7 +30,7 @@
   </aside>
   <main>
     <header class="topbar">
-      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V5.0 RC</span></div></div>
+      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V3 BETA</span></div></div>
       <div class="user-slot"><span id="actor">Not signed in</span><button type="button" id="logout" class="quiet" hidden>Sign out</button></div>
     </header>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
@@ -61,7 +62,28 @@
           <div class="online"><span class="dot"></span>LIVE DISCORD STATE</div>
         </div>
       </section>
+      <div class="overview-tools"><span id="last-refresh" class="hint">Not refreshed yet</span><button type="button" class="quiet" id="refresh-dashboard" data-lang-en="Refresh data ↻" data-lang-fr="Actualiser ↻" data-lang-darija="Refresh data ↻">Refresh data ↻</button></div>
       <div class="stats" id="stats"></div>
+      <section id="voice-status" class="panel">
+        <div class="head"><div><span class="eyebrow">LIVE MODULE STATUS</span><h2 data-lang-en="Voice Welcome" data-lang-fr="Accueil vocal" data-lang-darija="Voice Welcome">Voice Welcome</h2><p data-lang-en="Playback only. No member audio is recorded." data-lang-fr="Lecture uniquement. Aucun audio des membres enregistré." data-lang-darija="Ghir lecture. Ma kayrecordich sot dyal membres.">Playback only. No member audio is recorded.</p></div><span class="step" id="voice-connection">—</span></div>
+        <div class="settings-grid">
+          <div class="setting"><span><b data-lang-en="Selected room" data-lang-fr="Salon sélectionné" data-lang-darija="Room mkhtara">Selected room</b><small id="voice-room">—</small></span></div>
+          <div class="setting"><span><b data-lang-en="Custom welcome" data-lang-fr="Accueil personnalisé" data-lang-darija="Sot personnalisé">Custom welcome</b><small>MP3, WAV, OGG, M4A · first 5 minutes · up to 64 MB, subject to Discord limits.</small></span></div>
+        </div>
+        <p class="hint" id="voice-access">—</p>
+        <form id="voice-upload-form">
+          <label class="line-field" for="voice-file" data-lang-en="New welcome recording (64 MB max)" data-lang-fr="Nouvel audio d’accueil (64 Mo max.)" data-lang-darija="Sot jdid (64 MB max)">New welcome recording (64 MB max)</label>
+          <input id="voice-file" type="file" accept=".mp3,.wav,.ogg,.m4a" required>
+          <label class="line-field"><input id="voice-consent" type="checkbox" required> I have permission to play this audio in my server.</label>
+          <div class="wizard-actions"><button class="action" id="voice-upload" type="submit" data-lang-en="Upload recording" data-lang-fr="Envoyer l’audio" data-lang-darija="Sift audio">Upload recording</button><button class="quiet" id="voice-reset" type="button" data-lang-en="Restore default recording" data-lang-fr="Restaurer l’audio par défaut" data-lang-darija="Rje3 sot l asli">Restore default recording</button></div>
+          <p class="hint">The first five minutes are converted to Opus. Uploading does not enable or move the bot. Use the commands below to select or stop the voice room.</p>
+        </form>
+        <div class="quick-commands" aria-label="Voice Welcome commands">
+          <button type="button" class="quiet" data-copy="/voicewelcome setup">Copy setup command</button>
+          <button type="button" class="quiet" data-copy="/voicewelcome audio">Copy upload command</button>
+          <button type="button" class="quiet" data-copy="/voicewelcome off">Copy stop command</button>
+        </div>
+      </section>
       <section id="builder" class="panel builder">
         <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Preview missing staff roles, level rewards and essential bot channels. Nothing changes until you approve.</p></div><span class="step">PREVIEW → APPLY</span></div>
         <div id="themes" class="themes" role="group" aria-label="Server types"></div>
@@ -78,11 +100,21 @@
           <div class="wizard-actions"><button class="action" id="apply" type="button">Apply approved setup ↗</button><span class="hint">Preview expires after 10 minutes or if the server changes.</span></div>
         </div>
       </section>
+      <section id="security-center" class="panel">
+        <div class="head"><div><span class="eyebrow">SECURITY V2</span><h2 data-lang-en="Security Center" data-lang-fr="Centre de sécurité" data-lang-darija="Centre dyal sécurité">Security Center</h2><p data-lang-en="Defensive alerts only. No automatic bans." data-lang-fr="Alertes défensives uniquement. Aucun bannissement automatique." data-lang-darija="Ghir alerts dyal sécurité. Bla ban automatique.">Defensive alerts only. No automatic bans.</p></div></div>
+        <div class="settings-grid">
+          <div class="setting"><span><b data-lang-en="Monitoring" data-lang-fr="Surveillance" data-lang-darija="Monitoring">Monitoring</b><small id="security-monitoring">—</small></span></div>
+          <div class="setting"><span><b data-lang-en="Audit log access" data-lang-fr="Accès au journal d’audit" data-lang-darija="Accès audit log">Audit log access</b><small id="security-audit">—</small></span></div>
+          <div class="setting"><span><b data-lang-en="Automatic role pause" data-lang-fr="Pause des rôles automatiques" data-lang-darija="Pause dyal auto-role">Automatic role pause</b><small id="security-pause">—</small></span></div>
+          <div class="setting"><span><b data-lang-en="Recent alert categories" data-lang-fr="Catégories d’alertes récentes" data-lang-darija="Types dyal alerts jdod">Recent alert categories</b><small id="security-alert-types">—</small></span></div>
+        </div>
+        <p class="hint">Current snapshot only. Review recent activity and use /security_status in Discord for additional details. Review unusual activity manually.</p>
+      </section>
       <section id="preferences" class="panel">
         <div class="head"><div><span class="eyebrow">03 / CONTROL</span><h2>Protection & settings</h2><p>Settings are saved to the selected server only.</p></div></div>
         <form id="settings-form">
           <div class="settings-grid">
-            <label class="setting"><span><b>Bot language</b><small>Server response language</small></span><select name="language"><option value="en">English</option><option value="fr">Français</option><option value="darija">Darija</option></select></label>
+            <label class="setting"><span><b data-lang-en="Bot language" data-lang-fr="Langue du bot" data-lang-darija="Logha dyal bot">Bot language</b><small>Server response language</small></span><select name="language"><option value="en">English</option><option value="fr">Français</option><option value="darija">Darija</option></select></label>
             <label class="setting"><span><b>Anti-Spam</b><small>Automatic spam moderation</small></span><input type="checkbox" name="antispam"></label>
             <label class="setting"><span><b>Anti-Invites</b><small>Block public Discord invite links</small></span><input type="checkbox" name="anti_invites"></label>
             <label class="setting"><span><b>Levels & XP</b><small>Enable community progression</small></span><input type="checkbox" name="levels"></label>
@@ -95,7 +127,7 @@
           </div>
           <label class="line-field">Welcome message <small>Use {mention}, {name} or {server}</small><textarea rows="2" maxlength="1500" name="welcome_text"></textarea></label>
           <label class="line-field">Filtered words <small>Comma-separated</small><textarea rows="2" maxlength="1500" name="blocked_words"></textarea></label>
-          <div class="wizard-actions"><button class="action" type="submit" id="save-settings">Save server settings ↗</button></div>
+          <div class="wizard-actions"><button class="action" type="submit" id="save-settings" data-lang-en="Save server settings ↗" data-lang-fr="Enregistrer les paramètres ↗" data-lang-darija="7fed settings ↗">Save server settings ↗</button></div>
         </form>
       </section>
       <section id="modules" class="panel">
@@ -105,9 +137,9 @@
             <label class="setting"><span><b>Temporary TAB creation</b><small>Allow members to create new rooms</small></span><input type="checkbox" name="voice_rooms_enabled"></label>
             <label class="setting"><span><b>Automatic TAB panel</b><small>Post controls in the chat of each new room</small></span><input type="checkbox" name="voice_panel_enabled"></label>
             <label class="setting"><span><b>New support tickets</b><small>Existing tickets remain accessible</small></span><input type="checkbox" name="tickets_enabled"></label>
-            <label class="setting"><span><b>AI administration</b><small>Server-owner only, explicit requests sent to OpenAI. Requires provider configuration.</small></span><input type="checkbox" name="ai_enabled"></label>
+            <label class="setting"><span><b>AI assistant</b><small>Member questions via /ai; owner-only changes via /ai_admin. Requests go to OpenAI.</small></span><input type="checkbox" name="ai_enabled"></label>
           </div>
-          <div class="wizard-actions"><button class="action" type="submit" id="save-modules">Save modules ↗</button></div><p class="hint">Only the server owner can change AI access. Turning modules off does not delete data.</p>
+          <div class="wizard-actions"><button class="action" type="submit" id="save-modules" data-lang-en="Save modules ↗" data-lang-fr="Enregistrer les modules ↗" data-lang-darija="7fed modules ↗">Save modules ↗</button></div><p class="hint">Only the server owner can change AI access. Turning modules off does not delete data.</p>
         </form>
         <div class="settings-grid">
           <div class="setting"><span><b>Voice panel</b><small>Publish or refresh with /setup. Members can save room preferences.</small></span></div>
@@ -117,7 +149,7 @@
         </div>
       </section>
       <section id="activity" class="two-cols">
-        <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><div id="events" class="feed"></div></div>
+        <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2 data-lang-en="Recent activity" data-lang-fr="Activité récente" data-lang-darija="Activity jdida">Recent activity</h2></div></div><label class="line-field" for="activity-filter" data-lang-en="Filter recent activity" data-lang-fr="Filtrer l’activité récente" data-lang-darija="Filtri activity">Filter recent activity</label><input id="activity-filter" type="search" placeholder="Search last 12 events"><div id="events" class="feed"></div></div>
         <div class="panel"><div class="head"><div><span class="eyebrow">05 / UNDO</span><h2>Restore layout</h2></div></div><p>Focused setup keeps an archive of unrelated channels. Reopen the archived layout at any time.</p><button class="quiet" id="restore" type="button">Restore archived channels ↶</button><p class="hint">Server owner or Administrator only. Restores previously archived channels. No bulk deletion.</p></div>
       </section>
     </div>

@@ -176,7 +176,7 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         try:
             await bot.add_cog(VoiceWelcome(bot))
             group = bot.tree.get_command("voicewelcome")
-            self.assertEqual({c.name for c in group.commands}, {"setup", "off", "audio", "reset_audio"})
+            self.assertEqual({c.name for c in group.commands}, {"setup", "off", "audio", "reset_audio", "redirect"})
         finally:
             await bot.close()
 
@@ -333,7 +333,7 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         from collections import defaultdict
         from unittest.mock import Mock
         from voice_welcome import VoiceWelcome
-        store = SimpleNamespace(update=Mock())
+        store = SimpleNamespace(update=Mock(), config=lambda _: {'language': 'en'})
         locks = defaultdict(asyncio.Lock)
         cog = VoiceWelcome(SimpleNamespace(store=store, locks=locks))
         client = Mock()
@@ -356,6 +356,233 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
             lock.release()
             await task
         client.disconnect.assert_awaited_once_with(force=True)
+
+
+class DashboardV3Tests(unittest.TestCase):
+    def test_voice_status_is_actual_and_permission_scoped(self):
+        from web_dashboard_v2 import DashboardV2
+        from unittest.mock import Mock
+        channel = SimpleNamespace(id=123, name="Private welcome")
+        voice = Mock()
+        voice.is_connected.return_value = True
+        voice.channel = channel
+        guild = SimpleNamespace(get_channel=lambda cid: channel if cid == 123 else None, voice_client=voice)
+        cfg = {"voice_welcome_channel": 123}
+        self.assertTrue(DashboardV2.voice_status(guild, cfg, True)["connected"])
+        self.assertEqual(DashboardV2.voice_status(guild, cfg, True)["channel_name"], channel.name)
+        self.assertIsNone(DashboardV2.voice_status(guild, cfg, False)["channel_name"])
+        voice.channel = SimpleNamespace(id=456)
+        self.assertFalse(DashboardV2.voice_status(guild, cfg, True)["connected"])
+        self.assertFalse(DashboardV2.voice_status(guild, {}, True)["configured"])
+        self.assertFalse(DashboardV2.voice_status(guild, {"voice_welcome_channel": 789}, True)["channel_available"])
+
+
+class AIContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opt_in_memory_isolated_reset_and_default_stateless(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace(store=SimpleNamespace(config=lambda _: {"ai_enabled": True})))
+        cog.key = "test-not-a-real-key"
+        cog.all_guilds = True
+        cog.reserve_chat = lambda *args: True
+        cog.answer = AsyncMock(return_value="Example answer")
+        def member(guild, user):
+            return SimpleNamespace(guild=SimpleNamespace(id=guild, owner_id=99),
+                user=SimpleNamespace(id=user),
+                response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+                followup=SimpleNamespace(send=AsyncMock()))
+        a, b, c = member(1, 2), member(1, 3), member(4, 2)
+        try:
+            await cog.ask.callback(cog, a, "First", True)
+            self.assertIn((1, 2), cog.memory)
+            await cog.ask.callback(cog, b, "Other member", True)
+            cog.answer.assert_awaited_with("Other member")
+            await cog.ask.callback(cog, c, "Other server", True)
+            cog.answer.assert_awaited_with("Other server")
+            await cog.ask.callback(cog, a, "Follow-up", True)
+            cog.answer.assert_awaited_with("Follow-up", ("First", "Example answer"))
+            await cog.ai_clear.callback(cog, a)
+            self.assertNotIn((1, 2), cog.memory)
+            self.assertIn((1, 3), cog.memory)
+            await cog.ask.callback(cog, b, "Stateless")
+            cog.answer.assert_awaited_with("Stateless")
+            self.assertNotIn((1, 3), cog.memory)
+        finally:
+            await cog.cog_unload()
+        self.assertFalse(cog.memory)
+
+    async def test_reset_during_pending_request_prevents_repopulation(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace())
+        key, token = (1, 2), object()
+        cog.pending_memory[key] = token
+        cog.clear_memory(key)
+        cog.remember_exchange(key, token, "Question", "Answer")
+        self.assertNotIn(key, cog.memory)
+
+    async def test_provider_input_only_includes_opted_in_exchange(self):
+        from ai_agent import AIAgent
+        cog = AIAgent(SimpleNamespace())
+        cog.response_text = AsyncMock(return_value="Answer")
+        await cog.answer("Question")
+        self.assertEqual(cog.response_text.await_args.args[0]["input"], "Question")
+        await cog.answer("Follow-up", ("Previous", "Reply"))
+        payload = cog.response_text.await_args.args[0]
+        self.assertFalse(payload["store"])
+        self.assertEqual([x["role"] for x in payload["input"]], ["user", "assistant", "user"])
+        self.assertEqual(payload["input"][-1]["content"], "Follow-up")
+
+
+class DashboardAudioTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_endpoint_denies_nonadministrator(self):
+        from aiohttp import web
+        from web_dashboard_v2 import DashboardV2
+        dashboard = DashboardV2(SimpleNamespace())
+        dashboard._guild = AsyncMock(return_value=(
+            {"sid": "session", "actor": "9", "setup_guilds": set()},
+            SimpleNamespace(id=123)))
+        with self.assertRaises(web.HTTPForbidden):
+            await dashboard.voice_upload(SimpleNamespace())
+        with self.assertRaises(web.HTTPForbidden):
+            await dashboard.voice_reset(SimpleNamespace())
+
+    async def test_voice_upload_is_guild_scoped_and_rechecks_before_commit(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from aiohttp import web
+        from web_dashboard_v2 import DashboardV2
+        from voice_welcome import VoiceWelcome
+        store = SimpleNamespace(event=Mock())
+        bot = SimpleNamespace(store=store)
+        cog = VoiceWelcome(bot)
+        dashboard = DashboardV2(bot)
+        guild = SimpleNamespace(id=123)
+        dashboard._voice_access = AsyncMock(return_value=({"actor": "9"}, guild, cog))
+        dashboard._recheck_voice_access = AsyncMock()
+        async def chunks(size):
+            yield b"test"
+        async def convert(source, output, fmt):
+            self.assertEqual(source.read_bytes(), b"test")
+            self.assertEqual(fmt, "mp3")
+            output.write_bytes(b"converted")
+        cog.convert_audio = AsyncMock(side_effect=convert)
+        def request():
+            return SimpleNamespace(headers={"X-Audio-Extension": ".mp3", "X-Audio-Consent": "yes"},
+                content_type="application/octet-stream", content_length=4,
+                content=SimpleNamespace(iter_chunked=chunks))
+        with tempfile.TemporaryDirectory() as root:
+            cog.audio = Path(root) / "default.mp3"
+            cog.custom_audio(123).write_bytes(b"old")
+            cog.custom_audio(456).write_bytes(b"other")
+            dashboard._recheck_voice_access.side_effect = web.HTTPForbidden()
+            with self.assertRaises(web.HTTPForbidden):
+                await dashboard.voice_upload(request())
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"old")
+            dashboard._recheck_voice_access.side_effect = None
+            result = await dashboard.voice_upload(request())
+            self.assertEqual(result.status, 200)
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted")
+            self.assertEqual(cog.custom_audio(456).read_bytes(), b"other")
+            invalid = request()
+            invalid.content_length = 64_000_001
+            with self.assertRaises(web.HTTPBadRequest):
+                await dashboard.voice_upload(invalid)
+            self.assertEqual(cog.custom_audio(123).read_bytes(), b"converted")
+            await dashboard.voice_reset(request())
+            self.assertFalse(cog.custom_audio(123).exists())
+            self.assertTrue(cog.custom_audio(456).exists())
+
+
+class MultiLanguageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_permission_reply_follows_guild_language(self):
+        from voice_welcome import VoiceWelcome
+        languages = {1: "fr", 2: "darija", 3: "en"}
+        cog = VoiceWelcome(SimpleNamespace(store=SimpleNamespace(config=lambda gid: {"language": languages[gid]})))
+        for gid, expected in [(1, "Réservé au propriétaire ou à un administrateur."), (2, "Ghir Owner wla Administrator."), (3, "Server owner or Administrator only.")]:
+            i = SimpleNamespace(guild=SimpleNamespace(id=gid, owner_id=10),
+                guild_id=gid, user=SimpleNamespace(id=20), permissions=discord.Permissions.none(),
+                response=SimpleNamespace(send_message=AsyncMock()))
+            await cog.upload_audio.callback(cog, i, None)
+            i.response.send_message.assert_awaited_once_with(expected, ephemeral=True)
+
+    async def test_translations_have_equal_placeholders(self):
+        from localization import LANGUAGES, STRINGS, translate
+        from string import Formatter
+        for key in STRINGS:
+            if not key.startswith(("vw_", "ai_")):
+                continue
+            entries = STRINGS[key]
+            self.assertEqual(len(entries), len(LANGUAGES))
+            placeholders = [{field for _, field, _, _ in Formatter().parse(text) if field} for text in entries]
+            self.assertTrue(all(p == placeholders[0] for p in placeholders))
+        self.assertEqual(translate("invalid", "vw_off"), translate("en", "vw_off"))
+
+
+class SecurityV2Tests(unittest.TestCase):
+    def test_bounded_events_isolation_and_expiry(self):
+        from security_monitor import SecurityMonitor
+        monitor = SecurityMonitor()
+        for n in range(1000):
+            monitor.observe(1, "join", now=1000+n/1000)
+        self.assertLessEqual(len(monitor.events[(1,"join")]), 8)
+        self.assertTrue(monitor.snapshot(1, now=1001)["paused"])
+        self.assertFalse(monitor.snapshot(2, now=1001)["paused"])
+        self.assertEqual(monitor.snapshot(2, now=1001)["recent_alert_types"], 0)
+        self.assertEqual(monitor.snapshot(1, now=1001)["recent_alert_types"], 1)
+        monitor.prune(1200)
+        self.assertFalse(monitor.snapshot(1, now=1200)["paused"])
+        self.assertFalse(monitor.events)
+
+    def test_disabled_monitor_does_not_report_active_pause(self):
+        from security_monitor import SecurityMonitor
+        from web_dashboard_v2 import DashboardV2
+        monitor = SecurityMonitor()
+        for n in range(8):
+            monitor.observe(1, "join")
+        service = DashboardV2(SimpleNamespace(security=monitor))
+        guild = SimpleNamespace(id=1, me=SimpleNamespace(guild_permissions=discord.Permissions(view_audit_log=True)))
+        self.assertTrue(service.security_status(guild, {"security_enabled": True})["paused"])
+        self.assertFalse(service.security_status(guild, {"security_enabled": False})["paused"])
+        monitor.clear(1)
+        self.assertFalse(service.security_status(guild, {"security_enabled": True})["paused"])
+
+
+class WelcomeRedirectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_moves_only_original_listener_after_complete_greeting(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cfg = {"voice_welcome_redirect": True}
+        cog = VoiceWelcome(SimpleNamespace(store=SimpleNamespace(config=lambda _: cfg)))
+        guild = SimpleNamespace(id=1)
+        source, target = object(), object()
+        member = SimpleNamespace(id=2, guild=guild, voice=SimpleNamespace(channel=source), move_to=AsyncMock())
+        token = object()
+        cog.greeting_sessions[(1,2)] = token
+        cog.redirect_target = Mock(return_value=target)
+        await cog.redirect_after_greeting(member, source, token, False)
+        await cog.redirect_after_greeting(member, source, object(), True)
+        member.move_to.assert_not_awaited()
+        member.voice.channel = target
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_not_awaited()
+        member.voice.channel = source
+        cfg["voice_welcome_redirect"] = False
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_not_awaited()
+        cfg["voice_welcome_redirect"] = True
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_awaited_once_with(target, reason="TOV4R completed voice welcome (server opt-in)")
+
+    async def test_redirect_permission_and_default_off(self):
+        from voice_welcome import VoiceWelcome
+        from store import DEFAULTS, validate_config
+        self.assertFalse(DEFAULTS["voice_welcome_redirect"])
+        self.assertEqual(validate_config({"voice_welcome_redirect": True}), {"voice_welcome_redirect": True})
+        cog = VoiceWelcome(SimpleNamespace())
+        i = SimpleNamespace(guild=SimpleNamespace(owner_id=10), user=SimpleNamespace(id=20),
+            permissions=discord.Permissions.none(), response=SimpleNamespace(send_message=AsyncMock()))
+        await cog.redirect.callback(cog, i, True)
+        i.response.send_message.assert_awaited_once_with("Server owner or Administrator only.", ephemeral=True)
 
 
 if __name__ == "__main__":

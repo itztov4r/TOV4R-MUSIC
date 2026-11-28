@@ -8,6 +8,7 @@ let available = [];
 let previewToken = '';
 let choice = 'gaming';
 let meta = null;
+let voiceBusy = false;
 const $ = id => document.getElementById(id);
 const icons = {movies:'🎬',gaming:'🎮',music:'🎵',anime:'🌸',
                study:'📚',tech:'💻',sports:'⚽',friends:'👋',community:'🌐'};
@@ -31,6 +32,7 @@ async function api(path, options={}) {
   const headers = {};
   if (ownerKey) headers.Authorization = 'Bearer ' + ownerKey;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  Object.assign(headers,options.headers||{});
   if (csrf && options.method && options.method !== 'GET') {
     headers['X-CSRF-Token'] = csrf;
   }
@@ -74,8 +76,67 @@ function renderThemes() {
   }
 }
 
+const uiText = {
+  notConfigured:['NOT CONFIGURED','NON CONFIGURÉ','MA CONFIGURACH'],
+  unavailable:['ROOM UNAVAILABLE','SALON INDISPONIBLE','ROOM MA KAYNACH'],
+  connected:['BOT IN ROOM','BOT CONNECTÉ','BOT CONNECTÉ'],
+  disconnected:['NOT CONNECTED','NON CONNECTÉ','MA CONNECTACH'],
+  noRoom:['No room selected','Aucun salon sélectionné','Ma khtart ta room'],
+  configuredRoom:['Configured room','Salon configuré','Room configurée'],
+  access:['Owner / Administrator: use these commands in your Discord server.','Propriétaire / administrateur : utilisez ces commandes dans Discord.','Owner / Admin: sta3mel had commands f Discord.'],
+  denied:['Only the server owner or an Administrator may configure voice welcome.','Seuls le propriétaire et les administrateurs peuvent configurer l’accueil vocal.','Ghir Owner wla Admin y9der yconfiguri Voice Welcome.'],
+  members:['Members','Membres','Membres'], channels:['Channels','Salons','Rooms'], roles:['Roles','Rôles','Roles'],
+  bots:['Bots visible','Bots visibles','Bots visibles'], tabs:['Open TABs','TAB ouverts','TAB ma7loulin'], tickets:['Open tickets','Tickets ouverts','Tickets ma7loulin'],
+};
+function guildLanguage(g){return ['en','fr','darija'].includes(g?.settings?.language)?g.settings.language:'en';}
+function ui(key,g){return uiText[key][['en','fr','darija'].indexOf(guildLanguage(g))];}
+function localizeDashboard(g){
+  const lang=guildLanguage(g);
+  document.documentElement.lang=lang==='darija'?'ary-Latn':lang;
+  for(const node of document.querySelectorAll('[data-lang-en]')) node.textContent=node.getAttribute('data-lang-'+lang);
+}
+function renderVoice(g) {
+  const v=g?.voice_welcome;
+  $('voice-connection').textContent=!v?'—':!v.configured?ui('notConfigured',g):
+    !v.channel_available?ui('unavailable',g):v.connected?ui('connected',g):ui('disconnected',g);
+  $('voice-connection').classList.toggle('connected',!!v?.connected);
+  $('voice-room').textContent=v?.channel_name|| (v?.configured?ui('configuredRoom',g):ui('noRoom',g));
+  $('voice-access').textContent=v?.can_manage
+    ? ui('access',g)
+    : ui('denied',g);
+  for(const button of document.querySelectorAll('[data-copy]')) button.disabled=!v?.can_manage;
+  $('voice-upload-form').hidden=!v?.can_manage;
+  $('voice-file').value='';
+  $('voice-consent').checked=false;
+  for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=voiceBusy||!v?.can_manage;
+}
+function renderSecurity(g) {
+  const state=g?.security_status;
+  const lang=guildLanguage(g);
+  const t=(en,fr,da)=>({en,fr,darija:da}[lang]);
+  $('security-monitoring').textContent=!state?'—':state.enabled?t('Enabled','Activée','Activé'):t('Disabled','Désactivée','Ttfa');
+  $('security-audit').textContent=!state?'—':state.audit_available?t('Available','Disponible','Kayna'):t('Missing permission','Permission manquante','Permission na9sa');
+  $('security-pause').textContent=!state?'—':state.paused?t('Active — review manually','Active — vérifier manuellement','Active — khass review'):t('Inactive','Inactive','Inactive');
+  $('security-alert-types').textContent=state?String(state.recent_alert_types):'—';
+}
+function renderActivity() {
+  const g=guild(), query=$('activity-filter').value.trim().toLowerCase();
+  const events=(g?.activity||[]).filter(e=>String(e.kind+' '+e.detail).toLowerCase().includes(query));
+  $('events').replaceChildren();
+  for(const event of events) {
+    const block=el('div');
+    block.append(el('b',event.kind),el('p',event.detail),
+                 el('small',new Date(event.at*1000).toLocaleString()));
+    $('events').append(block);
+  }
+  if(!events.length) $('events').append(el('p',query?'No matching recent events.':'No activity yet.'));
+}
 function renderGuild() {
   const g = guild();
+  $('activity-filter').value='';
+  localizeDashboard(g);
+  renderVoice(g);
+  renderSecurity(g);
   if (!g) {
     $('guild-name').textContent='No server available';
     $('stats').replaceChildren();
@@ -96,7 +157,7 @@ function renderGuild() {
   $('guild-theme').textContent='Current template: '+(g.type||'community');
   $('stats').replaceChildren();
   for(const [label,number] of [
-    ['Members',g.members ?? '—'],['Channels',g.channels],['Roles',g.roles],['Bots visible',g.bots],['Open TABs',g.open_rooms],['Open tickets',g.open_tickets]
+    [ui('members',g),g.members ?? '—'],[ui('channels',g),g.channels],[ui('roles',g),g.roles],[ui('bots',g),g.bots],[ui('tabs',g),g.open_rooms],[ui('tickets',g),g.open_tickets]
   ]) {
     const card=el('div','','stat');
     card.append(el('small',label),el('strong',String(number)));
@@ -108,20 +169,14 @@ function renderGuild() {
     if (input.type==='checkbox') input.checked=!!value;
     else input.value=String(value ?? '');
   }
-  $('events').replaceChildren();
-  for(const event of g.activity) {
-    const block=el('div');
-    block.append(el('b',event.kind),el('p',event.detail),
-                 el('small',new Date(event.at*1000).toLocaleString()));
-    $('events').append(block);
-  }
-  if (!g.activity.length) $('events').append(el('p','No activity yet.'));
+  renderActivity();
   resetPreview();
 }
 
 async function refresh(preserve=true) {
   const data=await api('/api/v2/bootstrap');
   available=data.guilds;
+  $('last-refresh').textContent='Updated '+new Date().toLocaleTimeString();
   csrf=data.csrf||'';
   $('actor').textContent=data.actor;
   $('gate').hidden=true;
@@ -308,6 +363,48 @@ $('guild').addEventListener('change',()=>{
   renderGuild();
   message('');
 });
+async function changeVoiceAudio(reset=false) {
+  const g=guild();
+  if(!g?.voice_welcome?.can_manage||voiceBusy)return;
+  const file=$('voice-file').files[0];
+  const extension=file?.name.match(/\.[^.]+$/)?.[0]?.toLowerCase();
+  if(!reset && (!file||!['.mp3','.wav','.ogg','.m4a'].includes(extension)||file.size<1||file.size>64000000||!$('voice-consent').checked)){
+    return message('Select an authorized MP3, WAV, OGG or M4A file of up to 64 MB.');
+  }
+  if(!window.confirm((reset?'Restore the default welcome for ':'Replace the welcome recording for ')+g.name+'?'))return;
+  voiceBusy=true;
+  for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=true;
+  message(reset?'Restoring default greeting…':'Uploading and converting audio…');
+  try {
+    const path='/api/v2/guild/'+encodeURIComponent(g.id)+'/voice/audio';
+    const result=await api(path,reset?{method:'DELETE'}:{
+      method:'PUT',body:file,headers:{'Content-Type':'application/octet-stream','X-Audio-Extension':extension,'X-Audio-Consent':'yes'}
+    });
+    message(g.name+': '+result.message,true);
+    $('voice-file').value='';
+    $('voice-consent').checked=false;
+  }catch(error){message(error.message);}
+  finally{
+    voiceBusy=false;
+    for(const id of ['voice-file','voice-consent','voice-upload','voice-reset']) $(id).disabled=!guild()?.voice_welcome?.can_manage;
+  }
+}
+$('voice-upload-form').addEventListener('submit',event=>{event.preventDefault();changeVoiceAudio();});
+$('voice-reset').addEventListener('click',()=>changeVoiceAudio(true));
+$('activity-filter').addEventListener('input',renderActivity);
+$('refresh-dashboard').addEventListener('click',async()=>{
+  if(!window.confirm('Refresh server data? Unsaved changes and the current setup preview will be cleared.'))return;
+  $('refresh-dashboard').disabled=true;
+  try{await refresh();message('Server data refreshed.',true);}
+  catch(error){message(error.message);}
+  finally{$('refresh-dashboard').disabled=false;}
+});
+for(const button of document.querySelectorAll('[data-copy]')){
+  button.addEventListener('click',async()=>{
+    try{await navigator.clipboard.writeText(button.dataset.copy);message('Command copied. Run it in Discord.',true);}
+    catch(error){message('Copy manually: '+button.dataset.copy);}
+  });
+}
 $('focus').addEventListener('change',resetPreview);
 $('preview').addEventListener('click',preview);
 $('reset-preview').addEventListener('click',()=>{resetPreview();message('');});
