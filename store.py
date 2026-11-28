@@ -9,7 +9,7 @@ from cosmetics import CATALOG, STARTER_CREDITS
 DEFAULTS = dict(voice_creator=0, voice_category=0, welcome_channel=0, logs_channel=0,
                 ticket_category=0, support_role=0, autorole=0, server_type='community', levels=True,
                 antispam=True, anti_invites=False, welcome_text='Mer7ba {mention} f {server}! 🎉',
-                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby', community_channel=0, goodbye_enabled=True, anti_links=False, automod_progressive=False, voice_rooms_enabled=True, voice_panel_enabled=True, tickets_enabled=True, ai_enabled=False, voice_welcome_channel=0)
+                blocked_words='', xp_cooldown=60, voice_xp=False, security_enabled=False, security_channel=0, language='en', welcome_theme='ruby', community_channel=0, goodbye_enabled=True, anti_links=False, automod_progressive=False, voice_rooms_enabled=True, voice_panel_enabled=True, tickets_enabled=True, ai_enabled=False, voice_welcome_channel=0, voice_welcome_redirect=False)
 
 def level(xp):
     return math.isqrt(max(0, xp) // 100)
