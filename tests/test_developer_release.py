@@ -176,7 +176,7 @@ class VoiceWelcomeTests(unittest.IsolatedAsyncioTestCase):
         try:
             await bot.add_cog(VoiceWelcome(bot))
             group = bot.tree.get_command("voicewelcome")
-            self.assertEqual({c.name for c in group.commands}, {"setup", "off", "audio", "reset_audio"})
+            self.assertEqual({c.name for c in group.commands}, {"setup", "off", "audio", "reset_audio", "redirect"})
         finally:
             await bot.close()
 
@@ -545,6 +545,44 @@ class SecurityV2Tests(unittest.TestCase):
         self.assertFalse(service.security_status(guild, {"security_enabled": False})["paused"])
         monitor.clear(1)
         self.assertFalse(service.security_status(guild, {"security_enabled": True})["paused"])
+
+
+class WelcomeRedirectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_moves_only_original_listener_after_complete_greeting(self):
+        from voice_welcome import VoiceWelcome
+        from unittest.mock import Mock
+        cfg = {"voice_welcome_redirect": True}
+        cog = VoiceWelcome(SimpleNamespace(store=SimpleNamespace(config=lambda _: cfg)))
+        guild = SimpleNamespace(id=1)
+        source, target = object(), object()
+        member = SimpleNamespace(id=2, guild=guild, voice=SimpleNamespace(channel=source), move_to=AsyncMock())
+        token = object()
+        cog.greeting_sessions[(1,2)] = token
+        cog.redirect_target = Mock(return_value=target)
+        await cog.redirect_after_greeting(member, source, token, False)
+        await cog.redirect_after_greeting(member, source, object(), True)
+        member.move_to.assert_not_awaited()
+        member.voice.channel = target
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_not_awaited()
+        member.voice.channel = source
+        cfg["voice_welcome_redirect"] = False
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_not_awaited()
+        cfg["voice_welcome_redirect"] = True
+        await cog.redirect_after_greeting(member, source, token, True)
+        member.move_to.assert_awaited_once_with(target, reason="TOV4R completed voice welcome (server opt-in)")
+
+    async def test_redirect_permission_and_default_off(self):
+        from voice_welcome import VoiceWelcome
+        from store import DEFAULTS, validate_config
+        self.assertFalse(DEFAULTS["voice_welcome_redirect"])
+        self.assertEqual(validate_config({"voice_welcome_redirect": True}), {"voice_welcome_redirect": True})
+        cog = VoiceWelcome(SimpleNamespace())
+        i = SimpleNamespace(guild=SimpleNamespace(owner_id=10), user=SimpleNamespace(id=20),
+            permissions=discord.Permissions.none(), response=SimpleNamespace(send_message=AsyncMock()))
+        await cog.redirect.callback(cog, i, True)
+        i.response.send_message.assert_awaited_once_with("Server owner or Administrator only.", ephemeral=True)
 
 
 if __name__ == "__main__":
