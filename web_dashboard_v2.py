@@ -26,18 +26,22 @@ from server_templates import (
     TEMPLATES, styled_category_name, styled_channel_name, styled_role_name,
 )
 from focus_setup import candidates, restore_server
-from setup_service import provision_server
+from setup_service import SETUP_ROLES, setup_role
+from unified_setup import provision_all as provision_server
+from level_rewards import TIERS, reward_role
 from store import validate_config
 
 LOG = logging.getLogger("tov4r.dashboard")
 API = "https://discord.com/api/v10"
 MANAGE_GUILD = 1 << 5
+ADMINISTRATOR = 1 << 3
 SESSION_SECONDS = 3600
 STATE_SECONDS = 600
 PLAN_SECONDS = 600
 SAFE_CONFIG = frozenset({
-    "levels", "antispam", "anti_invites",
-    "welcome_text", "blocked_words", "xp_cooldown",
+    "levels", "antispam", "anti_invites", "voice_xp", "security_enabled",
+    "welcome_text", "blocked_words", "xp_cooldown", "language", "anti_links", "automod_progressive",
+    "voice_rooms_enabled", "voice_panel_enabled", "tickets_enabled", "ai_enabled", "goodbye_enabled",
 })
 
 
@@ -210,18 +214,25 @@ class DashboardV2:
             access_token=principal["token"]
         )
         permitted = {}
+        principal['setup_guilds'] = set()
         for item in guilds:
             try:
                 allowed = bool(item.get("owner")) or (
-                    int(item.get("permissions", "0")) & MANAGE_GUILD
-                ) == MANAGE_GUILD
+                    int(item.get("permissions", "0")) & (MANAGE_GUILD | ADMINISTRATOR)
+                ) != 0
                 if allowed:
                     guild = self.bot.get_guild(int(item["id"]))
                     if guild is not None:
                         permitted[str(guild.id)] = guild
+                        if str(guild.owner_id)==principal['actor'] or int(item.get('permissions','0')) & ADMINISTRATOR:
+                            principal['setup_guilds'].add(str(guild.id))
             except (ValueError, TypeError, KeyError):
                 continue
         return permitted
+
+    @staticmethod
+    def _can_setup(principal, guild):
+        return principal['sid'] is None or str(guild.id) in principal.get('setup_guilds', set())
 
     def _csrf_check(self, request, principal):
         if principal["sid"] is None:
@@ -262,10 +273,12 @@ class DashboardV2:
                 "bots": sum(m.bot for m in guild.members),
                 "type": cfg["server_type"],
                 "can_setup": bool(
-                    guild.me and guild.me.guild_permissions.manage_channels
-                    and guild.me.guild_permissions.manage_roles
+                    self._can_setup(principal, guild) and guild.me and guild.me.guild_permissions.manage_roles
                 ),
                 "settings": {key:cfg[key] for key in SAFE_CONFIG},
+                "open_rooms": self.bot.store.one("SELECT COUNT(*) n FROM rooms WHERE guild=?", (guild.id,))["n"],
+                "open_tickets": self.bot.store.one("SELECT COUNT(*) n FROM tickets WHERE guild=? AND closed=0", (guild.id,))["n"],
+                "can_manage_ai": principal["sid"] is None or str(guild.owner_id) == principal["actor"],
                 "activity": self.bot.store.all(
                     "SELECT kind, detail, at FROM events WHERE guild=? "
                     "ORDER BY id DESC LIMIT 12", (guild.id,)
@@ -294,72 +307,25 @@ class DashboardV2:
         ).hexdigest()
 
     def _plan(self, guild, theme, focus):
-        from server_templates import _get_item
-        spec = TEMPLATES[theme]
-        structure = []
-        missing_cats = 0
-        missing_channels = 0
-        for group in spec["groups"]:
-            cid = _get_item(self.bot, guild.id, theme, "category:" + group["key"])
-            known = guild.get_channel(cid) if cid else None
-            name = styled_category_name(group["name"])
-            exists = isinstance(known, discord.CategoryChannel) or any(
-                c.name in (name, group["name"]) for c in guild.categories
-            )
-            if not exists:
-                missing_cats += 1
-            channels = []
-            for ch in group["channels"]:
-                item_key = f'{group["key"]}:{ch["kind"]}:{ch["name"]}'
-                ch_id = _get_item(self.bot, guild.id, theme, item_key)
-                known_ch = guild.get_channel(ch_id) if ch_id else None
-                display = styled_channel_name(ch["name"], ch["kind"])
-                found = known_ch is not None or any(
-                    c.name in (display, ch["name"])
-                    for c in self._channels(guild) if getattr(c, "category_id", None)
-                    == (known.id if isinstance(known, discord.CategoryChannel) else None)
-                )
-                if not found:
-                    missing_channels += 1
-                channels.append({
-                    "name": display, "kind": ch["kind"],
-                    "readonly": bool(ch.get("readonly", False)),
-                    "exists": bool(found),
-                })
-            structure.append({"category": name, "exists": exists, "channels": channels})
-        missing_roles = sum(
-            not any(r.name in (name, styled_role_name(name))
-                    for r in guild.roles)
-            for name in spec["roles"]
-        )
-        focus_count, protected_count = 0, 0
-        if focus:
-            to_move, skipped = candidates(self.bot, guild, theme)
-            focus_count = len(to_move)
-            protected_count = len(skipped)
         return {
-            "theme": theme, "title": spec["title"],
-            "categories": structure, "roles": [
-                styled_role_name(r) for r in spec["roles"]
-            ],
-            "new_categories_estimate": missing_cats,
-            "new_channels_estimate": missing_channels,
-            "new_roles_estimate": missing_roles,
-            "focus": focus, "off_theme_archive_estimate": focus_count,
-            "protected_channels": protected_count,
-            "warnings": [
-                "Preview is an estimate; live Discord changes can alter the result.",
-                "No roles, messages, or existing channels are deleted by this wizard.",
-                "Focus archives unrelated public channels privately and supports undo."
-            ],
+            "theme": theme, "title": "TOV4R Staff & Community",
+            "categories": [], "roles": [name for _,name,_ in SETUP_ROLES] + [name for _,name,_,_ in TIERS] + ["TOV4R Verified","TOV4R • Gaming","TOV4R • Music","TOV4R • Movies"],
+            "new_categories_estimate": 2, "new_channels_estimate": 8,
+            "new_roles_estimate": sum(setup_role(self.bot,guild,key,name) is None for key,name,_ in SETUP_ROLES) + sum(reward_role(self.bot,guild,n) is None for n,_,_,_ in TIERS) + 4,
+            "focus": False, "off_theme_archive_estimate": 0, "protected_channels": 0,
+            "warnings": ["Upper-bound estimates for missing essential service channels and roles. Existing channels are not deleted or moved.",
+                         "Server owner or Administrator setup. Verification gate preserves existing member access via a dedicated role and restricts new members. Admin and Moderator permissions remain manual.",
+                         "Existing panel messages may be refreshed. Security alerts use private logs; voice XP remains opt-in."]
         }
 
     async def preview(self, request):
         principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text='Server owner or Administrator only for full setup')
         data = await self._json(request)
         theme = data.get("theme")
         focus = data.get("focus", False)
-        if theme not in TEMPLATES or type(focus) is not bool:
+        if theme not in TEMPLATES or focus is not False:
             raise web.HTTPBadRequest(text="Invalid type or focus flag")
         self._prune()
         plan = self._plan(guild, theme, focus)
@@ -374,6 +340,8 @@ class DashboardV2:
 
     async def apply(self, request):
         principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text='Server owner or Administrator only for full setup')
         data = await self._json(request)
         plan_id = data.get("plan_id")
         if not isinstance(plan_id, str) or len(plan_id) > 128:
@@ -387,7 +355,11 @@ class DashboardV2:
             raise web.HTTPConflict(text="Server changed since preview; review again")
         from bot import VoicePanel, TicketPanel, RolePanel, safe_role, embed
         async with self.bot.locks[("setup", guild.id)]:
-            # Recheck after taking the same lock as the slash setup command.
+            # Refresh authorization after taking the same lock as slash setup.
+            if principal['sid'] is not None:
+                permitted = await self._admin_guilds(principal)
+                if str(guild.id) not in permitted or not self._can_setup(principal, guild):
+                    raise web.HTTPForbidden(text='Administrator permission no longer available')
             if plan["fingerprint"] != self._fingerprint(guild):
                 raise web.HTTPConflict(text="Server changed during setup; preview again")
             try:
@@ -417,8 +389,20 @@ class DashboardV2:
         data = await self._json(request)
         if not data or set(data) - SAFE_CONFIG:
             raise web.HTTPBadRequest(text="Unsupported or empty settings change")
-        changes = validate_config(data)
+        try:
+            changes = validate_config(data)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        if "ai_enabled" in changes and principal["sid"] is not None and str(guild.owner_id) != principal["actor"]:
+            raise web.HTTPForbidden(text="Only the server owner can change AI access")
+        old = self.bot.store.config(guild.id)
         self.bot.store.update(guild.id, changes)
+        if any(key in changes and old[key] != changes[key] for key in ("levels", "voice_xp")):
+            if hasattr(self.bot, "voice_previous"):
+                self.bot.voice_previous = {k for k in self.bot.voice_previous if k[0] != guild.id}
+        if "security_enabled" in changes and old["security_enabled"] != changes["security_enabled"]:
+            if hasattr(self.bot, "security"):
+                self.bot.security.clear(guild.id)
         await self.bot.audit(
             guild, "Web settings", "Updated: " + ", ".join(changes) +
             " by Discord user " + principal["actor"]
@@ -427,6 +411,8 @@ class DashboardV2:
 
     async def restore(self, request):
         principal, guild = await self._guild(request, write=True)
+        if not self._can_setup(principal, guild):
+            raise web.HTTPForbidden(text="Server owner or Administrator only for layout restore")
         async with self.bot.locks[("setup", guild.id)]:
             result = await restore_server(self.bot, guild)
             await self.bot.audit(

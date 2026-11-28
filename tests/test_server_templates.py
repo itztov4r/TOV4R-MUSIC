@@ -139,9 +139,7 @@ class FakeGuild:
         self.channels = {}
         self.me = FakeMember(
             id=99999,
-            guild_permissions=FakeMember(
-                manage_channels=True, manage_roles=True, send_messages=True
-            )
+            guild_permissions=discord.Permissions.all()
         )
         self.default_role = FakeRole(11111, "@everyone", discord.Permissions.none())
 
@@ -236,6 +234,36 @@ class ServerTemplatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rules.messages), 1)
         self.assertIn(self.guild.me, rules.overwrites)
         self.assertTrue(rules.overwrites[self.guild.me].send_messages)
+
+    async def test_roles_only_setup_is_idempotent_and_unprivileged(self):
+        from setup_service import provision_server, reserved_staff_role
+        result = await provision_server(self.bot,self.guild,"community")
+        self.assertEqual(len(result["roles_new"]),10)
+        self.assertEqual(self.guild.channels,{})
+        self.assertTrue(all(not r.permissions.administrator for r in self.guild.roles))
+        for r in self.guild.roles:
+            self.assertEqual(reserved_staff_role(self.bot,self.guild,r),r.name in {"TOV4R Admin","TOV4R Moderator","TOV4R Support"})
+        from level_rewards import TIERS, reward_role, reward_permissions, tracked_reward
+        for n,_,_,_ in TIERS:
+            role=reward_role(self.bot,self.guild,n)
+            self.assertTrue(tracked_reward(self.bot,self.guild.id,role.id))
+            self.assertEqual(role.permissions.value,reward_permissions(n).value)
+            self.assertFalse(role.permissions.manage_roles)
+            self.assertFalse(role.permissions.manage_guild)
+        second=await provision_server(self.bot,self.guild,"community")
+        self.assertEqual(second["roles_new"],[])
+        self.assertEqual(self.guild.channels,{})
+        with self.assertRaises(ValueError):
+            await provision_server(self.bot,self.guild,"community",focus=True)
+
+    async def test_limited_bot_permissions_do_not_create_excess_privileges(self):
+        from setup_service import provision_server
+        self.guild.me.guild_permissions=discord.Permissions(manage_roles=True,view_channel=True,send_messages=True)
+        result=await provision_server(self.bot,self.guild,"community")
+        self.assertEqual(len(result["roles_new"]),10)
+        self.assertTrue(result["warnings"])
+        for role in self.guild.roles:
+            self.assertEqual(role.permissions.value & ~self.guild.me.guild_permissions.value,0)
 
     async def test_normal_channels_always_use_dict_overwrites(self):
         # This reproduces the production error that affected /setup on Gfrx.

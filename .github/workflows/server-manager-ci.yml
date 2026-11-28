@@ -23,6 +23,54 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_server_templates.py' -v
       - name: Test secure web wizard API and guild isolation
         run: python -m unittest discover -s tests -p 'test_web_wizard.py' -v
+      - name: Compile AI and live voice modules
+        run: python -m compileall -q ai_agent.py voice_ai.py live_voice.py tests/test_ai_agent.py tests/test_voice_ai.py tests/test_live_voice.py
+      - name: Test AI action allowlist and audio input handling
+        run: |
+          python -m unittest discover -s tests -p 'test_ai_agent.py' -v
+          python -m unittest discover -s tests -p 'test_voice_ai.py' -v
+          python -m unittest discover -s tests -p 'test_live_voice.py' -v
+      - name: Verify live voice slash commands and disabled default
+        run: |
+          python - <<'PY'
+          from live_voice import LiveVoice
+          from types import SimpleNamespace
+          names = {c.name for c in LiveVoice.__cog_app_commands__}
+          assert {'tl3', 'hbt'} <= names
+          cog = LiveVoice(SimpleNamespace())
+          assert not cog.enabled
+          assert not cog.allowed(SimpleNamespace(guild=None))
+          PY
+      - name: Test guild language isolation and persistent panels
+        run: python -m unittest discover -s tests -p 'test_localization.py' -v
+      - name: Test backup isolation and event eligibility
+        run: python -m unittest discover -s tests -p 'test_community_tools.py' -v
+      - name: Test free cosmetic wallet and profile inventory
+        run: python -m unittest discover -s tests -p 'test_cosmetics.py' -v
+      - name: Test activity isolation and voice XP cap
+        run: python -m unittest discover -s tests -p 'test_activity.py' -v
+      - name: Test persistent room preferences and voice panel
+        run: python -m unittest discover -s tests -p 'test_voice_preferences.py' -v
+      - name: Test guild-scoped security monitoring
+        run: python -m unittest discover -s tests -p 'test_security_monitor.py' -v
+      - name: Test community social votes, dates and persistent views
+        run: python -m unittest discover -s tests -p 'test_community_social.py' -v
+      - name: Test setup permission limits
+        run: python -m unittest discover -s tests -p 'test_setup_permissions.py' -v
+      - name: Test AutoMod filters, incidents and escalation
+        run: python -m unittest discover -s tests -p 'test_automod.py' -v
+      - name: Test verification gate permission preservation
+        run: python -m unittest discover -s tests -p 'test_verification_gate.py' -v
+      - name: Test welcome destination and verification role safety
+        run: python -m unittest discover -s tests -p 'test_welcome_verification.py' -v
+      - name: Test community premium persistence
+        run: python -m unittest discover -s tests -p 'test_community_premium.py' -v
+      - name: Test ticket V8 priority and reopen safety
+        run: python -m unittest discover -s tests -p 'test_ticket_v8.py' -v
+      - name: Test ticket categories and single staff claim
+        run: python -m unittest discover -s tests -p 'test_ticket_v2.py' -v
+      - name: Test persistent ticket deletion queue
+        run: python -m unittest discover -s tests -p 'test_ticket_close.py' -v
       - name: Validate browser JavaScript syntax
         run: |
           node --check web/wizard.js
@@ -60,16 +108,11 @@ jobs:
           assert 'permissions' in parts and int(parts['permissions'][0]) > 0
           assert int(parts['permissions'][0]) & (1 << 3) == 0, 'Administrator must never be requested'
           print('Guild install URL and least-privilege flags verified')
-          # /setup must display a type picker in Discord.
+          # Setup is now roles-only. Themed channels are no longer created.
           from bot import Features
-          setups = [cmd for cmd in Features.__cog_app_commands__ if cmd.name == 'setup']
-          assert len(setups) == 1
-          fields = {param.name: param for param in setups[0].parameters}
-          assert 'type' in fields, f'Missing type parameter: {list(fields)}'
-          assert 'cleanup' in fields, 'Missing cleanup option'
-          assert 'focus' in fields, 'Missing focus mode option'
-          assert any(cmd.name == 'restore_layout' for cmd in Features.__cog_app_commands__)
-          assert len(fields['type'].choices) == 9
-          assert any(ch.value == 'movies' for ch in fields['type'].choices)
-          print('/setup type picker verified')
+          cmds = {cmd.name: cmd for cmd in Features.__cog_app_commands__}
+          assert all(not p.required for p in cmds['setup'].parameters)
+          assert {'setup','restore_layout','level_rewards'} <= set(cmds)
+          assert not {'setup_modules','configure','panels','ticket_setup','language','rolepanel','voice_xp','security_setup'} & set(cmds)
+          print('Unified setup and removed duplicate commands verified')
           PY

@@ -2,6 +2,7 @@
 import logging
 import re
 import discord
+from verification_gate import active as gate_active, admitted
 from discord.ext import commands
 
 HELP = '''دخل لـ **➕ Create your room** باش تصايب روم ديالك، وبقى داخلها وانت كتستعمل الأوامر.
@@ -71,7 +72,7 @@ class VoiceCommands(commands.Cog):
             if action in {'lock','unlock','hide','show'}:
                 ow=channel.overwrites_for(ctx.guild.default_role)
                 if action in {'lock','unlock'}: ow.connect=action=='unlock'
-                else: ow.view_channel=action=='show'
+                else: ow.view_channel=(None if gate_active(self.bot,ctx.guild.id) else True) if action=='show' else False
                 await channel.set_permissions(ctx.guild.default_role,overwrite=ow,reason=reason)
                 answer={'lock':'🔒 تسدّات الروم. اللي عطيتو Permit يقدر يبقى يدخل.','unlock':'🔓 تحلّات الروم.','hide':'👻 تخبّات الروم.','show':'👁 الروم ولات باينة.'}[action]
             elif action=='name':
@@ -129,7 +130,7 @@ class VoiceCommands(commands.Cog):
                     if target.id in {room['owner'],self.bot.user.id}: continue
                     ow.connect=None; ow.view_channel=None
                     if target==ctx.guild.default_role:
-                        ow.connect=True; ow.view_channel=True; ow.send_messages=None
+                        ow.connect=True; ow.view_channel=None if gate_active(self.bot,ctx.guild.id) else True; ow.send_messages=None
                     if ow.is_empty(): del overwrites[target]
                     else: overwrites[target]=ow
                 await channel.edit(overwrites=overwrites,user_limit=0,bitrate=min(64000,int(ctx.guild.bitrate_limit)),rtc_region=None,reason=reason)
@@ -148,6 +149,7 @@ class VoiceCommands(commands.Cog):
             else:
                 if not argument: raise commands.BadArgument(f'خاصك تمنشن العضو: `.v {action} @عضو`')
                 target=await commands.MemberConverter().convert(ctx,argument)
+                if not admitted(self.bot,target): raise commands.BadArgument('Member must complete verification first.')
                 if target.bot or target.id==ctx.author.id: raise commands.BadArgument('اختار عضو آخر، ماشي نتا ولا بوت.')
                 if action=='transfer':
                     if not target.voice or target.voice.channel!=channel: raise commands.BadArgument('هاد العضو خاصو يكون معاك فالروم.')

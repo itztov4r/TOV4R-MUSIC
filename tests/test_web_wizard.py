@@ -42,6 +42,7 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(":memory:")
         self.guild = FakeGuild()
         self.guild.name = "Only Test Server"
+        self.guild.owner_id = 12345
         self.guild.member_count = 12
         self.guild.members = []
         self.guild.roles = []
@@ -126,11 +127,51 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
             _, guild = await self.service._guild(req, write=True)
             self.assertEqual(guild.id, self.guild.id)
 
+    async def test_setup_requires_administrator_or_owner(self):
+        self.new_oauth_session()
+        req = self.oauth(guild=self.guild.id, csrf="test-csrf-token", data={"theme":"movies"})
+        grants = [{"id":str(self.guild.id),"owner":False,"permissions":str(1<<5)}]
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            with self.assertRaises(web.HTTPForbidden):
+                await self.service.preview(req)
+            data=json.loads((await self.service.bootstrap(self.oauth())).text)
+            self.assertFalse(data["guilds"][0]["can_setup"])
+        grants[0]["permissions"]=str(1<<3)
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            data=json.loads((await self.service.preview(req)).text)
+            plan=data["plan_id"]
+            with patch.object(api,"provision_server",new=AsyncMock(return_value={"type":"movies"})) as mocked:
+                result=await self.service.apply(self.oauth(guild=self.guild.id,csrf="test-csrf-token",data={"plan_id":plan}))
+                self.assertTrue(json.loads(result.text)["ok"])
+                mocked.assert_awaited_once()
+            plan=json.loads((await self.service.preview(req)).text)["plan_id"]
+            grants[0]["permissions"]=str(1<<5)
+            with self.assertRaises(web.HTTPForbidden):
+                await self.service.apply(self.oauth(guild=self.guild.id,csrf="test-csrf-token",data={"plan_id":plan}))
+        self.guild.owner_id=87654321
+        grants[0]["owner"]=True
+        grants[0]["permissions"]="0"
+        with patch.object(self.service,"_discord",new=AsyncMock(return_value=grants)):
+            self.assertIn("plan_id",json.loads((await self.service.preview(req)).text))
+
     async def test_oauth_missing_settings_disables_login_but_keeps_owner(self):
         self.assertFalse(self.service.enabled)
         with self.assertRaises(web.HTTPServiceUnavailable):
             await self.service.login(FakeRequest())
         self.assertEqual(self.service._principal(self.owner())["actor"], "owner")
+
+    async def test_v7_module_settings_are_guild_scoped(self):
+        self.bot.voice_previous = {(self.guild.id, 1, 2), (99, 1, 2)}
+        response = await self.service.settings(self.owner(self.guild.id, {"voice_xp": True, "security_enabled": True}))
+        self.assertTrue(json.loads(response.text)["ok"])
+        self.assertTrue(self.store.config(self.guild.id)["voice_xp"])
+        self.assertTrue(self.store.config(self.guild.id)["security_enabled"])
+        self.assertFalse(self.store.config(99)["voice_xp"])
+        self.assertEqual(self.bot.voice_previous, {(99, 1, 2)})
+        with self.assertRaises(web.HTTPBadRequest):
+            await self.service.settings(self.owner(self.guild.id, {"voice_xp": "yes"}))
+        with self.assertRaises(web.HTTPForbidden):
+            await self.service.settings(self.owner(99, {"security_enabled": True}))
 
     async def test_preview_requires_valid_type_and_creates_no_discord_resources(self):
         req = self.owner(self.guild.id, {"theme": "movies", "focus": False})
@@ -140,7 +181,8 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(response.text)
         self.assertIn("plan_id", data)
         self.assertEqual(data["theme"], "movies")
-        self.assertGreater(data["new_channels_estimate"], 0)
+        self.assertEqual(data["new_channels_estimate"], 8)
+        self.assertEqual(data["new_roles_estimate"], 14)
         self.assertEqual(self.guild.channels, {})
         self.assertEqual(self.guild.roles, [])
 
@@ -191,7 +233,7 @@ class WebWizardTests(unittest.IsolatedAsyncioTestCase):
             "welcome_text": "Original", "xp_cooldown": 160,
         })
         await self.service.preview(self.owner(self.guild.id, {
-            "theme": "tech", "focus": True,
+            "theme": "tech", "focus": False,
         }))
         cfg = self.store.config(self.guild.id)
         self.assertEqual(cfg["welcome_text"], "Original")

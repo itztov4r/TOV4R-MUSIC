@@ -17,7 +17,9 @@
     <nav aria-label="Navigation principale">
       <a href="#overview">◈ &nbsp; Overview</a>
       <a href="#builder">✦ &nbsp; Setup Wizard</a>
-      <a href="#preferences">⚙ &nbsp; Server Settings</a>
+      <a href="#preferences">⚙ &nbsp; XP & Security</a>
+      <a href="#modules">🎫 &nbsp; Module Manager</a>
+      <a href="/status">↗ &nbsp; Public status &amp; guide</a>
       <a href="#activity">◷ &nbsp; Activity</a>
     </nav>
     <div class="side-bottom">
@@ -27,7 +29,7 @@
   </aside>
   <main>
     <header class="topbar">
-      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V4</span></div></div>
+      <div><span class="eyebrow">TOV4R / OPERATIONS</span><div class="top-title">Community Control Center <span class="version">V5.0 RC</span></div></div>
       <div class="user-slot"><span id="actor">Not signed in</span><button type="button" id="logout" class="quiet" hidden>Sign out</button></div>
     </header>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
@@ -61,11 +63,11 @@
       </section>
       <div class="stats" id="stats"></div>
       <section id="builder" class="panel builder">
-        <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Choose a theme. See exactly what TOV4R plans to add before it touches your server.</p></div><span class="step">PREVIEW → APPLY</span></div>
+        <div class="head"><div><span class="eyebrow">01 / CREATE</span><h2>Setup Wizard <span>✦</span></h2><p>Preview missing staff roles, level rewards and essential bot channels. Nothing changes until you approve.</p></div><span class="step">PREVIEW → APPLY</span></div>
         <div id="themes" class="themes" role="group" aria-label="Server types"></div>
         <div class="wizard-options">
-          <label class="switch"><input id="focus" type="checkbox"><span class="toggle-ui"></span><span><b>Focus Mode</b><small>Hide unrelated public channels in a recoverable private archive. Never delete their messages.</small></span></label>
-          <p class="safety">🔒 Unrelated admin, log and active voice channels are protected. Your current roles and messages are preserved.</p>
+          <input id="focus" type="checkbox" hidden disabled><b>Unified bot setup</b><p>Staff permissions must be configured manually by the server owner.</p>
+          <p class="safety">🔒 All existing channels and roles are preserved; verification updates public visibility and preserves existing member access. Only missing essential bot channels and roles are created.</p>
         </div>
         <div class="wizard-actions"><button class="action" id="preview" type="button">Generate preview →</button><button class="quiet" id="reset-preview" type="button">Reset</button></div>
         <div id="preview-panel" class="preview-panel" hidden>
@@ -80,9 +82,15 @@
         <div class="head"><div><span class="eyebrow">03 / CONTROL</span><h2>Protection & settings</h2><p>Settings are saved to the selected server only.</p></div></div>
         <form id="settings-form">
           <div class="settings-grid">
+            <label class="setting"><span><b>Bot language</b><small>Server response language</small></span><select name="language"><option value="en">English</option><option value="fr">Français</option><option value="darija">Darija</option></select></label>
             <label class="setting"><span><b>Anti-Spam</b><small>Automatic spam moderation</small></span><input type="checkbox" name="antispam"></label>
             <label class="setting"><span><b>Anti-Invites</b><small>Block public Discord invite links</small></span><input type="checkbox" name="anti_invites"></label>
             <label class="setting"><span><b>Levels & XP</b><small>Enable community progression</small></span><input type="checkbox" name="levels"></label>
+            <label class="setting"><span><b>Voice XP</b><small>Opt-in voice-state activity; no audio recording</small></span><input type="checkbox" name="voice_xp"></label>
+            <label class="setting"><span><b>Security monitoring</b><small>Raid and unusual activity alerts; no automatic bans</small></span><input type="checkbox" name="security_enabled"></label>
+            <label class="setting"><span><b>Anti-links</b><small>Apply configured link moderation</small></span><input type="checkbox" name="anti_links"></label>
+            <label class="setting"><span><b>Progressive moderation</b><small>Enable existing escalation policy</small></span><input type="checkbox" name="automod_progressive"></label>
+            <label class="setting"><span><b>Goodbye messages</b><small>Send member departure notices</small></span><input type="checkbox" name="goodbye_enabled"></label>
             <label class="setting"><span><b>XP cooldown</b><small>Seconds between XP awards (15–3600)</small></span><input name="xp_cooldown" type="number" min="15" max="3600" required></label>
           </div>
           <label class="line-field">Welcome message <small>Use {mention}, {name} or {server}</small><textarea rows="2" maxlength="1500" name="welcome_text"></textarea></label>
@@ -90,9 +98,27 @@
           <div class="wizard-actions"><button class="action" type="submit" id="save-settings">Save server settings ↗</button></div>
         </form>
       </section>
+      <section id="modules" class="panel">
+        <div class="head"><div><span class="eyebrow">04 / COMMUNITY MODULES</span><h2>Module Manager</h2><p>Enable or disable features for the selected server. Existing rooms and tickets are preserved.</p></div></div>
+        <form id="modules-form">
+          <div class="settings-grid">
+            <label class="setting"><span><b>Temporary TAB creation</b><small>Allow members to create new rooms</small></span><input type="checkbox" name="voice_rooms_enabled"></label>
+            <label class="setting"><span><b>Automatic TAB panel</b><small>Post controls in the chat of each new room</small></span><input type="checkbox" name="voice_panel_enabled"></label>
+            <label class="setting"><span><b>New support tickets</b><small>Existing tickets remain accessible</small></span><input type="checkbox" name="tickets_enabled"></label>
+            <label class="setting"><span><b>AI administration</b><small>Server-owner only, explicit requests sent to OpenAI. Requires provider configuration.</small></span><input type="checkbox" name="ai_enabled"></label>
+          </div>
+          <div class="wizard-actions"><button class="action" type="submit" id="save-modules">Save modules ↗</button></div><p class="hint">Only the server owner can change AI access. Turning modules off does not delete data.</p>
+        </form>
+        <div class="settings-grid">
+          <div class="setting"><span><b>Voice panel</b><small>Publish or refresh with /setup. Members can save room preferences.</small></span></div>
+          <div class="setting"><span><b>Ticket panel</b><small>Use /setup to configure and refresh the ticket panel. Closed tickets are deleted after 10 seconds, subject to transcript saving.</small></span></div>
+          <div class="setting"><span><b>Private security alerts</b><small>Use /setup to configure private alerts. View Audit Log is needed for destructive-activity alerts.</small></span></div>
+          <div class="setting"><span><b>Community profiles</b><small>/profile, /leaderboard and /voice_top show your server's progression.</small></span></div>
+        </div>
+      </section>
       <section id="activity" class="two-cols">
         <div class="panel"><div class="head"><div><span class="eyebrow">04 / MONITOR</span><h2>Recent activity</h2></div></div><div id="events" class="feed"></div></div>
-        <div class="panel"><div class="head"><div><span class="eyebrow">05 / UNDO</span><h2>Restore layout</h2></div></div><p>Focused setup keeps an archive of unrelated channels. Reopen the archived layout at any time.</p><button class="quiet" id="restore" type="button">Restore archived channels ↶</button><p class="hint">This only restores channels previously archived by TOV4R. No bulk deletion.</p></div>
+        <div class="panel"><div class="head"><div><span class="eyebrow">05 / UNDO</span><h2>Restore layout</h2></div></div><p>Focused setup keeps an archive of unrelated channels. Reopen the archived layout at any time.</p><button class="quiet" id="restore" type="button">Restore archived channels ↶</button><p class="hint">Server owner or Administrator only. Restores previously archived channels. No bulk deletion.</p></div>
       </section>
     </div>
     <footer class="footer">TOV4R BOT &nbsp; • &nbsp; PREMIUM DISCORD COMMUNITY MANAGEMENT &nbsp; • &nbsp; <a href="/">Legacy owner dashboard</a></footer>

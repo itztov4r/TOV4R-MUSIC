@@ -81,24 +81,29 @@ function renderGuild() {
     $('stats').replaceChildren();
     $('preview').disabled=true;
     $('save-settings').disabled=true;
+    $('save-modules').disabled=true;
     $('restore').disabled=true;
+    $('events').replaceChildren();
+    resetPreview();
     return;
   }
   $('preview').disabled=!g.can_setup;
   $('save-settings').disabled=false;
+  $('save-modules').disabled=false;
   $('restore').disabled=!g.can_setup;
+  $('modules-form').elements.namedItem('ai_enabled').disabled=!g.can_manage_ai;
   $('guild-name').textContent=g.name;
   $('guild-theme').textContent='Current template: '+(g.type||'community');
   $('stats').replaceChildren();
   for(const [label,number] of [
-    ['Members',g.members ?? '—'],['Channels',g.channels],['Roles',g.roles],['Bots visible',g.bots]
+    ['Members',g.members ?? '—'],['Channels',g.channels],['Roles',g.roles],['Bots visible',g.bots],['Open TABs',g.open_rooms],['Open tickets',g.open_tickets]
   ]) {
     const card=el('div','','stat');
     card.append(el('small',label),el('strong',String(number)));
     $('stats').append(card);
   }
   for(const [name,value] of Object.entries(g.settings)) {
-    const input=$('settings-form').elements.namedItem(name);
+    const input=$('settings-form').elements.namedItem(name)||$('modules-form').elements.namedItem(name);
     if (!input) continue;
     if (input.type==='checkbox') input.checked=!!value;
     else input.value=String(value ?? '');
@@ -184,10 +189,10 @@ async function preview() {
       method:'POST',
       body:JSON.stringify({theme:choice,focus:$('focus').checked}),
     });
-    renderPlan(plan);
+    if(guild()?.id===g.id) renderPlan(plan);
   }catch(error){
     message('Preview: '+error.message);
-  }finally{$('preview').disabled=false;}
+  }finally{$('preview').disabled=!guild()?.can_setup;}
 }
 
 async function apply() {
@@ -220,8 +225,8 @@ async function saveSettings(event) {
   if(!g)return;
   const fields=event.currentTarget.elements;
   const payload={};
-  for(const name of ['levels','antispam','anti_invites','welcome_text',
-                     'blocked_words','xp_cooldown']){
+  for(const name of ['levels','antispam','anti_invites','voice_xp','security_enabled','welcome_text',
+                     'blocked_words','xp_cooldown','language','anti_links','automod_progressive','goodbye_enabled']){
     const field=fields.namedItem(name);
     payload[name]=(field.type==='checkbox')?field.checked:
                   name==='xp_cooldown'?Number(field.value):field.value;
@@ -235,6 +240,25 @@ async function saveSettings(event) {
     await refresh();
   }catch(error){message(error.message);}
   finally{$('save-settings').disabled=false;}
+}
+
+async function saveModules(event) {
+  event.preventDefault();
+  const g=guild();
+  if(!g)return;
+  const payload={};
+  for(const field of event.currentTarget.elements) {
+    if(field.type==='checkbox' && !field.disabled) payload[field.name]=field.checked;
+  }
+  $('save-modules').disabled=true;
+  try{
+    await api('/api/v2/guild/'+encodeURIComponent(g.id)+'/settings',{
+      method:'PUT',body:JSON.stringify(payload)
+    });
+    message('Modules saved for '+g.name+'.',true);
+    await refresh();
+  }catch(error){message(error.message);}
+  finally{$('save-modules').disabled=!guild();}
 }
 
 async function restore() {
@@ -289,6 +313,7 @@ $('preview').addEventListener('click',preview);
 $('reset-preview').addEventListener('click',()=>{resetPreview();message('');});
 $('apply').addEventListener('click',apply);
 $('settings-form').addEventListener('submit',saveSettings);
+$('modules-form').addEventListener('submit',saveModules);
 $('restore').addEventListener('click',restore);
 $('logout').addEventListener('click',async()=>{
   try {

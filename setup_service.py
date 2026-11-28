@@ -4,11 +4,14 @@ All changes are initiated by an authorized manager. This module does not run on
 startup. Existing panels and channels are reused instead of replaced.
 """
 import discord
-from server_templates import TEMPLATES, apply_template
-from focus_setup import focus_server, restore_active_template
+from server_templates import TEMPLATES
+from template_security import member_role_permissions
+from level_rewards import provision_rewards, tracked_reward
+from localization import tr
+from setup_permissions import grantable_permissions, setup_action
 
 
-async def provision_server(bot, guild, theme, *,
+async def provision_modules(bot, guild, theme, *,
                            voice_panel_factory, ticket_panel_factory,
                            role_panel_factory, safe_role_fn, embed_factory,
                            focus=False, cleanup=False):
@@ -39,10 +42,10 @@ async def provision_server(bot, guild, theme, *,
     voice = await category("voice_category", "TOV4R • VOICE")
     await category("ticket_category", "TOV4R • SUPPORT", True)
     role = guild.get_role(cfg["support_role"])
-    if role is None:
+    if role is None or role.managed or role.id == guild.default_role.id:
         role = await guild.create_role(
             name="TOV4R Support", colour=discord.Colour(0xef3340),
-            permissions=discord.Permissions.none(), reason="TOV4R setup"
+            permissions=discord.Permissions.none(), mentionable=False, reason="TOV4R setup"
         )
         cfg["support_role"] = role.id
         bot.store.update(guild.id, {"support_role": role.id})
@@ -76,9 +79,9 @@ async def provision_server(bot, guild, theme, *,
 
     for name, factory, description in (
         ("voice-panel", voice_panel_factory,
-         "Dkhel l **➕ Create your room**, men ba3d control room dyalek hna."),
+         tr(bot,guild.id,"voice_desc")),
         ("tickets", ticket_panel_factory,
-         "Support / report / request. Click Open ticket."),
+         tr(bot,guild.id,"ticket_intro")+"\n"+tr(bot,guild.id,"ticket_private")),
     ):
         channel = discord.utils.get(guild.text_channels, name=name)
         if channel is None:
@@ -89,14 +92,76 @@ async def provision_server(bot, guild, theme, *,
                 }, reason="TOV4R setup"
             )
             await channel.send(embed=embed_factory("TOV4R • " + name, description),
-                               view=factory(bot))
+                               view=factory(bot,guild.id))
 
-    restored = await restore_active_template(bot, guild, theme)
-    summary = await apply_template(
-        bot, guild, theme, panel_factory=role_panel_factory,
-        safe_role_fn=safe_role_fn, cleanup=cleanup
-    )
-    summary["previously_restored"] = restored
-    if focus:
-        summary["focus"] = await focus_server(bot, guild, theme)
+    return {"ok": True}
+
+SETUP_ROLES = (("admin", "TOV4R Admin", 0xef3340),
+               ("moderator", "TOV4R Moderator", 0x5865f2),
+               ("support", "TOV4R Support", 0x2ecc71),
+               ("member", "TOV4R Member", 0x95a5a6))
+
+def setup_role(bot, guild, key, name):
+    if key == "support":
+        role = guild.get_role(bot.store.config(guild.id)["support_role"])
+        if role and not role.managed and role.id != guild.default_role.id and not tracked_reward(bot,guild.id,role.id) and not bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template IN ('__verification__','__verification_gate__') AND kind='role' AND discord_id=?",(guild.id,role.id)):
+            return role
+    tracked = bot.store.one("SELECT discord_id FROM template_items WHERE guild=? AND template=? AND item_key=?",
+                            (guild.id, "__staff_setup__", key))
+    role = guild.get_role(tracked["discord_id"]) if tracked else None
+    if role and not role.managed and role.id != guild.default_role.id:
+        return role
+    # Do not silently grant ticket access to an unrelated role with the same name.
+    if key == "support":
+        return None
+    return next((r for r in guild.roles if r.name == name and not r.managed and r.id != guild.default_role.id), None)
+
+def reserved_staff_role(bot, guild, role):
+    if bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification_gate__' AND item_key='access' AND discord_id=?",(guild.id,role.id)):
+        return True
+    if bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template='__verification__' AND discord_id=?",(guild.id,role.id)):
+        return True
+    if role.id == bot.store.config(guild.id)["support_role"]:
+        return True
+    if role.name.casefold() in {name.casefold() for key,name,_ in SETUP_ROLES if key != "member"}:
+        return True
+    return bool(bot.store.one("SELECT 1 FROM template_items WHERE guild=? AND template=? AND item_key IN ('admin','moderator','support') AND discord_id=?",
+                              (guild.id, "__staff_setup__", role.id)))
+
+async def provision_server(bot, guild, theme, *, voice_panel_factory=None,
+                           ticket_panel_factory=None, role_panel_factory=None,
+                           safe_role_fn=None, embed_factory=None, focus=False, cleanup=False):
+    """Roles-only setup. No creation, deletion, moving or editing of channels."""
+    if theme not in TEMPLATES:
+        raise ValueError("Unknown server type")
+    if focus or cleanup:
+        raise ValueError("Setup is now roles-only; channel cleanup and focus are disabled.")
+    if not guild.me or not guild.me.guild_permissions.manage_roles:
+        raise ValueError("TOV4R Bot needs Manage Roles.")
+    summary = {"type": theme, "title": "TOV4R Staff & Community", "categories_new": [],
+               "channels_new": [], "roles_new": [], "reused": 0,
+               "roles_panel": "not created", "permissions_fixed": 0, "cleanup": None,
+               "warnings": []}
+    for key,name,color in SETUP_ROLES:
+        role = setup_role(bot,guild,key,name)
+        if role is None:
+            requested=member_role_permissions() if key == "member" else discord.Permissions.none()
+            available=guild.me.guild_permissions
+            permissions=grantable_permissions(requested,available)
+            if permissions.value!=requested.value:
+                summary["warnings"].append(name+": some optional permissions were unavailable to the bot.")
+            role = await setup_action("create role "+name,guild.create_role(name=name, colour=discord.Colour(color),
+                permissions=permissions, mentionable=False, reason="TOV4R roles-only setup; staff rights configured by server owner"))
+            summary["roles_new"].append(role.name)
+        else:
+            summary["reused"] += 1
+        bot.store.run("INSERT OR REPLACE INTO template_items VALUES(?,?,?,?,?)",
+                      (guild.id,"__staff_setup__",key,role.id,"role"))
+        if key == "support":
+            bot.store.update(guild.id,{"support_role":role.id})
+            # A previously configured automatic role must never become staff.
+            if bot.store.config(guild.id)["autorole"] == role.id:
+                bot.store.update(guild.id,{"autorole":0})
+    summary["roles_new"].extend(await provision_rewards(bot,guild,warnings=summary["warnings"]))
+    bot.store.update(guild.id,{"server_type":theme})
     return summary
