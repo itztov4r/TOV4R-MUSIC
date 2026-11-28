@@ -567,6 +567,24 @@ STRINGS.update({
   ]
 })
 
+STRINGS.update({
+  "vw_redirect_unavailable": [
+    "Set up Voice Welcome and the Create Your Room module first. Check voice and Move Members permissions.",
+    "Configurez d’abord l’accueil vocal et Create Your Room. Vérifiez les permissions vocales et Déplacer les membres.",
+    "Configure Voice Welcome w Create Your Room lwel. Chouf permissions vocal w Move Members."
+  ],
+  "vw_redirect_on": [
+    "Automatic transfer enabled after a completed greeting. Tell members before they join that they will be moved to Create Your Room.",
+    "Transfert automatique activé après l’accueil complet. Informez les membres avant leur entrée qu’ils seront déplacés vers Create Your Room.",
+    "Transfer automatique tactiv-a mlli ysali l'accueil. 3lem membres 9bel ma ydkhlo belli ghadi ymchiw l Create Your Room."
+  ],
+  "vw_redirect_off": [
+    "Automatic transfer disabled.",
+    "Transfert automatique désactivé.",
+    "Transfer automatique ttfa."
+  ]
+})
+
 def translate(language,key,**values):
     idx=LANGUAGES.index(language) if language in LANGUAGES else 0
     return STRINGS[key][idx].format(**values)
